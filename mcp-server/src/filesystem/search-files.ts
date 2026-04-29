@@ -3,13 +3,15 @@ import { promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 
 import type { RuntimeContext } from "../runtime/context.js";
-import { type ResolvedWorkspacePath, resolveWorkspacePath, toStableRelativePath } from "./workspace.js";
+import { isPathInside, type ResolvedWorkspacePath, resolveWorkspacePath, toStableRelativePath } from "./workspace.js";
 
 export const DEFAULT_SEARCH_FILES_LIMIT = 100;
 export const MAX_SEARCH_FILES_LIMIT = 1_000;
 export const MAX_SEARCH_CONTEXT_LINES = 10;
+export const MAX_RIPGREP_STDOUT_BYTES = 4 * 1024 * 1024;
 
 const IGNORED_DIRECTORY_NAMES = new Set(["node_modules", "dist", "coverage", ".git"]);
+const MAX_RIPGREP_STDERR_BYTES = 64 * 1024;
 const DEFAULT_RIPGREP_COMMAND = "rg";
 
 export class SearchFilesError extends Error {
@@ -56,6 +58,7 @@ interface RipgrepResult {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  stdoutTruncated: boolean;
 }
 
 interface ParsedLine {
@@ -118,6 +121,8 @@ export async function searchWorkspaceFiles(
     "--line-number",
     "--column",
     "--with-filename",
+    "--max-count",
+    limit.toString(),
     "-e",
     regex,
     "--context",
@@ -143,7 +148,7 @@ export async function searchWorkspaceFiles(
     throw new SearchFilesError(normalizeRipgrepError(result.stderr, `ripgrep exited with code ${result.exitCode}.`));
   }
 
-  return formatMatches(context, parseRipgrepOutput(result.stdout), contextLines, limit);
+  return formatMatches(context, parseRipgrepOutput(result.stdout), contextLines, limit, result.stdoutTruncated);
 }
 
 function validatePaths(paths: unknown): string[] {
@@ -250,13 +255,39 @@ function execRipgrep(command: string, args: string[]): Promise<RipgrepResult> {
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
 
     child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutTruncated) {
+        return;
+      }
+
+      const remainingBytes = MAX_RIPGREP_STDOUT_BYTES - stdoutBytes;
+      if (chunk.length > remainingBytes) {
+        stdoutTruncated = true;
+        if (remainingBytes > 0) {
+          stdoutChunks.push(chunk.subarray(0, remainingBytes));
+          stdoutBytes += remainingBytes;
+        }
+        child.kill();
+        return;
+      }
+
       stdoutChunks.push(chunk);
+      stdoutBytes += chunk.length;
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
-      stderrChunks.push(chunk);
+      const remainingBytes = MAX_RIPGREP_STDERR_BYTES - stderrBytes;
+      if (remainingBytes <= 0) {
+        return;
+      }
+
+      const bufferedChunk = chunk.length > remainingBytes ? chunk.subarray(0, remainingBytes) : chunk;
+      stderrChunks.push(bufferedChunk);
+      stderrBytes += bufferedChunk.length;
     });
 
     child.on("error", (error: NodeJS.ErrnoException) => {
@@ -273,6 +304,7 @@ function execRipgrep(command: string, args: string[]): Promise<RipgrepResult> {
         stdout: Buffer.concat(stdoutChunks).toString("utf8"),
         stderr: Buffer.concat(stderrChunks).toString("utf8"),
         exitCode,
+        stdoutTruncated,
       });
     });
   });
@@ -334,8 +366,10 @@ function formatMatches(
   parsedResults: Map<string, ParsedFileResult>,
   contextLines: number,
   limit: number,
+  forceTruncated = false,
 ): SearchFilesResult {
   const entries: SearchFilesEntry[] = [];
+  const seenMatches = new Set<string>();
   const sortedFileResults = Array.from(parsedResults.entries()).sort(([leftPath], [rightPath]) =>
     leftPath.localeCompare(rightPath, "en"),
   );
@@ -353,6 +387,11 @@ function formatMatches(
 
     const sortedMatches = fileResult.matches.sort((left, right) => left.line - right.line || (left.column ?? 0) - (right.column ?? 0));
     for (const parsedMatch of sortedMatches) {
+      const matchKey = createMatchKey(absolutePath, parsedMatch);
+      if (seenMatches.has(matchKey)) {
+        continue;
+      }
+
       if (entries.length >= limit) {
         return {
           matches: entries,
@@ -369,14 +408,19 @@ function formatMatches(
         match: parsedMatch.match,
         ...(contextLines === 0 ? {} : { preview: buildPreview(fileResult.lines, parsedMatch.line, contextLines) }),
       });
+      seenMatches.add(matchKey);
     }
   }
 
   return {
     matches: entries,
     limit,
-    truncated: false,
+    truncated: forceTruncated,
   };
+}
+
+function createMatchKey(absolutePath: string, parsedMatch: ParsedMatch): string {
+  return `${normalizeAbsolutePath(absolutePath)}\0${parsedMatch.line}\0${parsedMatch.column ?? ""}\0${parsedMatch.match}`;
 }
 
 function buildPreview(lines: Map<number, ParsedLine>, matchLine: number, contextLines: number): SearchFilesContextLine[] {
@@ -414,10 +458,7 @@ function isIgnoredRelativePath(relativePath: string): boolean {
 }
 
 function isInsideResolvedRoot(workspaceRoot: string, absolutePath: string): boolean {
-  const root = path.resolve(workspaceRoot);
-  const candidate = path.resolve(absolutePath);
-  const relative = path.relative(root, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return isPathInside(workspaceRoot, absolutePath);
 }
 
 function normalizeRipgrepError(stderr: string, fallback: string): string {

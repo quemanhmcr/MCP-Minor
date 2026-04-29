@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { searchWorkspaceFiles } from "../src/filesystem/search-files.js";
+import { MAX_SEARCH_CONTEXT_LINES, MAX_SEARCH_FILES_LIMIT, searchWorkspaceFiles } from "../src/filesystem/search-files.js";
 import type { RuntimeContext } from "../src/runtime/context.js";
 
 describe("searchWorkspaceFiles", () => {
@@ -96,6 +96,30 @@ describe("searchWorkspaceFiles", () => {
     expect(result.matches).toHaveLength(1);
     expect(result.limit).toBe(1);
     expect(result.truncated).toBe(true);
+  });
+
+  it("clamps oversized limit and context lines", async () => {
+    const result = await searchWorkspaceFiles(context, {
+      paths: ["src/a.ts"],
+      regex: "target",
+      contextLines: MAX_SEARCH_CONTEXT_LINES + 100,
+      limit: MAX_SEARCH_FILES_LIMIT + 100,
+    });
+
+    expect(result.limit).toBe(MAX_SEARCH_FILES_LIMIT);
+    expect(result.matches[0]?.preview?.map((entry) => entry.line)).toEqual([1, 2, 3]);
+  });
+
+  it("rejects missing paths", async () => {
+    await expect(searchWorkspaceFiles(context, { paths: ["missing"], regex: "target" })).rejects.toThrow(
+      "Path 'missing' does not exist.",
+    );
+  });
+
+  it("deduplicates duplicate and overlapping paths deterministically", async () => {
+    const result = await searchWorkspaceFiles(context, { paths: ["src", "src/a.ts", "src"], regex: "target" });
+
+    expect(result.matches.map((entry) => entry.relativePath)).toEqual(["src/a.ts"]);
   });
 
   it("returns ripgrep invalid regex errors clearly", async () => {

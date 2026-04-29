@@ -37,6 +37,8 @@ npm run lint
 npm run typecheck
 ```
 
+`search_files` requires `rg` (ripgrep) on `PATH`.
+
 Run the server over stdio:
 
 ```powershell
@@ -56,7 +58,7 @@ npm run dev
 ## Tools
 
 - `list_files`: read-only listing for one or more files/directories. Input: `paths: string[]`, optional `recursive`, optional `limit`. Oversized limits are clamped by the server. Results include absolute `path`, `type`, and stable workspace-relative `relativePath`. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped. Symlinks are not followed.
-- `search_files`: read-only Rust-regex search using system `rg`. Input: `paths: string[]`, `regex: string`, optional `filePattern`, optional `contextLines`, optional `limit`. Results include absolute `path`, stable `relativePath`, `line`, optional `column`, matched text, and optional bounded preview context. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped.
+- `search_files`: read-only Rust-regex search using system `rg`. Input: `paths: string[]`, `regex: string`, optional `filePattern`, optional `contextLines`, optional `limit`. Results include absolute `path`, stable `relativePath`, `line`, optional `column`, matched text, and optional bounded preview context. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped. Symlinks are not followed by default ripgrep traversal.
 
 ## Git Hygiene
 
