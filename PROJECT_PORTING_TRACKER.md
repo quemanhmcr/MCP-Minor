@@ -1,112 +1,61 @@
 # Dirac Codebase Tools MCP Porting Tracker
 
-## Project Goal
+Operational source of truth for the standalone MCP port. Keep this file optimized for quickly resuming work.
 
-Build a standalone MCP server that ports only Dirac's important codebase-working tools. We are not porting Dirac's CLI, VS Code UI, provider/auth flow, task workflow, browser workflow, skills, or subagent system.
+## Current Project Status
 
-Each work session should port one tool, or one small shared dependency required by that tool, to keep context small and reviewable.
+- Goal: build a standalone MCP server for selected Dirac codebase-working tools only.
+- Runtime package: `mcp-server/`, Node.js >= 20.11, ESM TypeScript, npm with committed `package-lock.json`.
+- Transport: MCP stdio first. Do not add HTTP/SSE until a real consumer needs it.
+- Upstream source: `dirac/` is a pinned git submodule and read-only source material.
+- Pinned Dirac commit: `e827ec30d4cdae078588df2040f203b780d657ad`.
+- Current production-ready MCP tools: `list_files`, `search_files`.
+- No `read_file` port exists yet. No anchors, tree-sitter tools, symbol index, editing tools, or command execution are implemented.
+- Generated artifacts must stay out of git. In particular, remove `mcp-server/dist/` after any build.
 
-Source repo:
+## Production-Ready Tools
 
-- Local source: `c:\project\lamviec\dirac-mcp\dirac`
-- Upstream: `https://github.com/dirac-run/dirac`
-- Initial inspected commit: `e827ec30d4cdae078588df2040f203b780d657ad`
-- Source strategy: git submodule pinned by the root repository. Treat `dirac/` as read-only source material.
+### `list_files`
 
-Primary research note:
+Status: production-ready under current MCP scope.
 
-- `DIRAC_TOOL_PORTING_NOTES.md`
+- MCP callable through `McpServer.registerTool`.
+- Read-only, idempotent, workspace-root guarded.
+- Accepts `paths`, optional `recursive`, optional `limit`.
+- Returns structured `{ entries, limit, truncated }` with entries shaped as `{ path, type, relativePath }`.
+- Deterministic sort by entry name within each listed directory.
+- Skips generated/heavy directories: `node_modules`, `dist`, `coverage`, `.git`; also skips submodule-style `.git` files.
+- Does not follow symlinks.
+- Defensively validates direct handler calls, clamps oversized limits, deduplicates overlapping inputs, and fails fast on missing paths.
 
-MCP server project:
+Dirac parity:
 
-- Path: `c:\project\lamviec\dirac-mcp\mcp-server`
-- Package manager: npm, with committed `package-lock.json`.
-- Runtime: Node.js >= 20.11, ESM TypeScript.
-- Transport: MCP stdio transport first. Do not add HTTP/SSE until a real consumer needs it.
+- Parity accurate for the core read-only listing purpose and generated directory skips.
+- Intentionally different from Dirac: output is structured MCP JSON, not Dirac UI text; no line counts or mtimes; no globby/gitignore integration; no home/root special case beyond workspace-root containment; non-git hidden files and hidden directories remain visible.
 
-## Porting Rules
+### `search_files`
 
-- Build a new MCP server instead of trying to run Dirac's `ToolExecutor`.
-- Reuse/port Dirac's pure logic where possible.
-- Replace Dirac UI callbacks with MCP tool responses or MCP errors.
-- Remove/no-op telemetry, approval UI, task workflow, webview behavior, and VS Code-specific host behavior.
-- Keep tool APIs close to Dirac's existing schemas unless there is a strong MCP reason to simplify.
-- Add tests for each ported tool before marking it done.
-- Mark a tool done only after it is callable through MCP and has at least basic verification.
+Status: production-ready under current MCP scope.
 
-## How To Start A New Session
+- MCP callable through `McpServer.registerTool`.
+- Read-only, idempotent, workspace-root guarded.
+- Accepts `paths`, `regex`, optional `filePattern`, optional `contextLines`, optional `limit`.
+- Uses system `rg` via `child_process.spawn` with an args array, not shell string composition.
+- Returns structured `{ matches, limit, truncated }` with matches shaped as `{ path, relativePath, line, column?, match, preview? }`.
+- Skips dotfiles, hidden directories, `node_modules`, `dist`, `coverage`, and `.git`, including when dot/hidden paths are targeted explicitly.
+- Caps captured ripgrep stdout before parsing and passes `--max-count` using the clamped MCP limit.
+- Surfaces missing-ripgrep and invalid-regex failures as concise MCP tool errors without stack traces.
 
-1. Read this file and `DIRAC_TOOL_PORTING_NOTES.md`.
-2. Check repo status from `c:\project\lamviec\dirac-mcp` and do not revert unrelated changes.
-3. Ensure the Dirac source submodule is present:
+Dirac parity:
 
-```powershell
-git submodule update --init --recursive
-git submodule status
-```
+- Parity accurate for Dirac's core `rg --json` search approach, Rust regex behavior, hidden-path exclusion, generated-directory exclusion, context line clamp, first-submatch-only same-line behavior, and byte-column behavior.
+- Intentionally different from Dirac: output is structured MCP JSON instead of anchored formatted text; no `AnchorStateManager` integration; no `.diracignore` controller; no bundled `rg` lookup.
 
-4. Work in `mcp-server/` for MCP implementation unless inspecting upstream source under `dirac/`.
-5. Install dependencies if needed:
+Current caveats:
 
-```powershell
-cd c:\project\lamviec\dirac-mcp\mcp-server
-npm install
-```
-
-6. Before changing a tool status to `done`, run the relevant verification commands and record them in the session log.
-7. Port at most one Dirac tool, or one small shared dependency, per session.
-
-## Definition Of Done
-
-For setup/shared dependency work:
-
-- Code builds with `npm run build`.
-- Tests pass with `npm run test`.
-- Lint passes with `npm run lint`.
-- Tracker documents any new technical decision or verification command.
-
-For a ported Dirac tool:
-
-- MCP tool schema is registered and callable through the MCP server.
-- Handler is headless and does not depend on Dirac UI callbacks, telemetry, VS Code host APIs, or task workflow.
-- Path handling is constrained to configured workspace roots.
-- Basic automated tests cover success and at least one failure/edge case.
-- Manual or automated MCP-level verification is recorded in the session log.
-
-## Technical Decisions
-
-- Standalone package lives in `mcp-server/`; the upstream `dirac/` clone remains read-only source material unless a session explicitly says otherwise.
-- Root git repository tracks only MCP project source, documentation, configuration, lockfiles, and the `dirac/` submodule pointer.
-- Upstream Dirac is represented as a git submodule at `dirac/`, pinned to `e827ec30d4cdae078588df2040f203b780d657ad`.
-- Generated artifacts are ignored and must not be committed: `node_modules/`, `dist/`, `coverage/`, logs, local env files, and Dirac runtime indexes.
-- Use npm because the upstream clone uses `package-lock.json` and there is no pnpm/yarn workspace requirement here.
-- Use TypeScript `NodeNext`, strict mode, ESM, and explicit `.js` import specifiers for emitted Node compatibility.
-- Use separate build/typecheck configs: `tsconfig.build.json` emits only runtime `src/`, while `tsconfig.json` typechecks tests and config.
-- Use `@modelcontextprotocol/sdk` `McpServer` with `StdioServerTransport`.
-- Keep server creation separate from stdio startup so tests can instantiate the server without opening transport streams.
-- Initial runtime context contains `cwd`, `sessionId`, and `workspaceRoots`; future path guards and anchor state should use this context.
-- Path resolution in `mcp-server/src/filesystem/workspace.ts` resolves relative user paths against `RuntimeContext.cwd`, permits absolute paths only inside `RuntimeContext.workspaceRoots`, rejects traversal and sibling-prefix escapes, normalizes Windows-style user separators, and returns stable slash-separated workspace-relative paths.
-- `list_files` is registered through `McpServer.registerTool` with zod input/output schemas, read-only/idempotent annotations, and structured MCP output.
-- `list_files` returns deterministic entries shaped as `{ path, type, relativePath }`, sorted by name within each listed directory. It skips generated/heavy directories: `node_modules`, `dist`, `coverage`, and `.git`, including submodule-style `.git` files.
-- `list_files` does not follow symlinks. This avoids leaking files through workspace-internal links that point outside configured workspace roots; future tools can add explicit symlink metadata if a real consumer needs it.
-- `list_files` validates direct calls defensively in addition to MCP zod validation: invalid limits fail fast, oversized limits clamp to `MAX_LIST_FILES_LIMIT`, duplicate/overlapping resolved entries are deduplicated, and missing paths fail fast with a concise tool error.
-- MCP tool registration now flows through `mcp-server/src/tools/register.ts`, and shared response/error formatting lives in `mcp-server/src/tools/response.ts` so future tools can return consistent text JSON, `structuredContent`, and concise `isError` responses without stack traces.
-- `search_files` uses system `rg` through `child_process.spawn` with an args array, never shell string composition. Missing `rg` returns a concise MCP tool error telling the caller to install ripgrep. Ripgrep stdout is capped before parsing and `--max-count` is set from the clamped MCP limit to avoid unbounded output growth before post-parse limiting.
-- `search_files` is read-only, workspace-guarded, and restricted to configured workspace roots. It skips dotfiles, hidden directories, `node_modules`, `dist`, `coverage`, and `.git` both through ripgrep glob exclusions and output filtering.
-- `search_files` returns deterministic structured entries shaped as `{ path, relativePath, line, column?, match, preview? }` inside `{ matches, limit, truncated }`. `contextLines` and `limit` are clamped, duplicate overlapping-path matches are deduplicated, output is sorted by path/line/column, and invalid regex errors are surfaced from ripgrep without stack traces.
-- `search_files.column` intentionally exposes ripgrep's 1-based byte column. Multiple regex submatches on the same line currently produce one MCP match entry using ripgrep's first submatch, matching Dirac's parsed-output behavior.
-- Full `.diracignore` parity is deferred. The MCP server currently relies on workspace-root containment and built-in generated/hidden path skips; this avoids a watcher and include-file subsystem until a consumer needs it.
-
-## Verification Commands
-
-Run from `c:\project\lamviec\dirac-mcp\mcp-server`:
-
-```powershell
-npm run build
-npm run test
-npm run lint
-npm run typecheck
-```
+- `column` is ripgrep's 1-based byte column.
+- Multiple regex submatches on the same line produce one MCP match entry using ripgrep's first submatch, matching Dirac's parsed-output behavior.
+- `limit` is the global MCP result limit after parsing. `--max-count` is also used as a per-file safety bound.
 
 ## Tool Status Table
 
@@ -116,73 +65,115 @@ Status meanings:
 - `in_progress`: active session started but not complete.
 - `blocked`: needs a decision or missing dependency.
 - `ported`: implementation exists but verification is incomplete.
-- `done`: implemented, callable, and verified.
+- `done`: implemented, callable, verified, and documented.
 
-| Tool | Status | Priority | Dirac Schema | Dirac Handler/Core | MCP Notes | Session Done |
-| --- | --- | --- | --- | --- | --- | --- |
-| `list_files` | `done` | P0 | `src/core/prompts/system-prompt/tools/list_files.ts` | `src/core/task/tools/handlers/ListFilesToolHandler.ts`, `src/services/glob/list-files.ts` | MCP implementation accepts `paths`, optional `recursive`, optional `limit`; returns structured `{ path, type, relativePath }` entries with workspace guarding and generated-directory ignores. | 2026-04-29 |
-| `search_files` | `done` | P0 | `src/core/prompts/system-prompt/tools/search_files.ts` | `src/core/task/tools/handlers/SearchFilesToolHandler.ts`, `src/services/ripgrep/index.ts` | MCP implementation accepts `paths`, `regex`, optional `filePattern`, optional `contextLines`, optional `limit`; uses system `rg --json`, workspace guarding, generated-directory ignores, bounded structured output, and clear missing-`rg`/invalid-regex errors. | 2026-04-29 |
-| `read_file` | `not_started` | P0 | `src/core/prompts/system-prompt/tools/read_file.ts` | `src/core/task/tools/handlers/ReadFileToolHandler.ts`, `src/integrations/misc/extract-file-content.ts` | Important because it creates hash anchors for `edit_file`. Needs `AnchorStateManager` session id. |  |
-| `get_file_skeleton` | `not_started` | P1 | `src/core/prompts/system-prompt/tools/get_file_skeleton.ts` | `src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`, `src/utils/ASTAnchorBridge.ts` | Requires tree-sitter WASM packaging and query files. Good after `read_file`. |  |
-| `get_function` | `not_started` | P1 | `src/core/prompts/system-prompt/tools/get_function.ts` | `src/core/task/tools/handlers/GetFunctionToolHandler.ts`, `src/utils/ASTAnchorBridge.ts` | Requires tree-sitter and anchors. Supports multi-file/multi-function lookup. |  |
-| `find_symbol_references` | `not_started` | P2 | `src/core/prompts/system-prompt/tools/find_symbol_references.ts` | `src/core/task/tools/handlers/FindSymbolReferencesToolHandler.ts`, `src/services/symbol-index` | Uses `SymbolIndexService` and SQLite WASM. Decide persistence vs in-memory/session-scoped index. |  |
-| `edit_file` | `not_started` | P1 | `src/core/prompts/system-prompt/tools/edit_file.ts` | `src/core/task/tools/handlers/EditFileToolHandler.ts`, `src/core/task/tools/handlers/edit-file/*` | High value. Start from `EditExecutor`; replace `DiffViewProvider` with direct file writes and diff response. |  |
-| `replace_symbol` | `not_started` | P2 | `src/core/prompts/system-prompt/tools/replace_symbol.ts` | `src/core/task/tools/handlers/ReplaceSymbolToolHandler.ts`, `src/utils/ASTAnchorBridge.ts` | Needs AST range resolution. Replace VS Code diff save with direct writes. |  |
-| `rename_symbol` | `not_started` | P2 | `src/core/prompts/system-prompt/tools/rename_symbol.ts` | `src/core/task/tools/handlers/RenameSymbolToolHandler.ts`, `src/services/symbol-index` | Needs symbol index and careful diff/reporting. Higher blast radius. |  |
-| `diagnostics_scan` | `not_started` | P3 | `src/core/prompts/system-prompt/tools/diagnostics_scan.ts` | `src/core/task/tools/handlers/DiagnosticsScanToolHandler.ts`, `src/integrations/diagnostics` | Optional. Dirac version is host/integration-heavy. Consider simple command-based diagnostics later. |  |
-| `execute_command` | `not_started` | P3 | `src/core/prompts/system-prompt/tools/execute_command.ts` | `src/core/task/tools/handlers/ExecuteCommandToolHandler.ts` | Optional and risky. Needs explicit sandbox/permission policy before exposing via MCP. |  |
+| Tool | Status | Priority | Production Status | Dirac Parity / Notes | Next Action |
+| --- | --- | --- | --- | --- | --- |
+| `list_files` | `done` | P0 | Production-ready under MCP scope | Core listing behavior ported. Intentional differences: structured JSON, no line counts/mtimes, no `.diracignore`, hidden non-git paths visible. | Maintain only. |
+| `search_files` | `done` | P0 | Production-ready under MCP scope | Core ripgrep behavior ported. Hidden/dot path exclusion, byte columns, and first-submatch behavior documented. Intentional differences: structured JSON, no anchors, no `.diracignore`, system `rg`. | Maintain only. |
+| `read_file` | `not_started` | P0 | Not available | Needed for hash anchors and later editing. Upstream uses `ReadFileToolHandler`, `extract-file-content`, `AnchorStateManager`, and line hashing. | Next implementation session. |
+| `get_file_skeleton` | `not_started` | P1 | Not available | Requires tree-sitter WASM packaging, queries, and likely anchor support. | Start after `read_file`. |
+| `get_function` | `not_started` | P1 | Not available | Requires tree-sitter and anchors via `ASTAnchorBridge`. | Start after skeleton/anchors. |
+| `edit_file` | `not_started` | P1 | Not available | High value but higher risk. Needs headless replacement for diff view, approvals, diagnostics, and dirty-file handling. | Start only after anchors are stable. |
+| `find_symbol_references` | `not_started` | P2 | Not available | Requires symbol index and SQLite WASM or a deliberate alternative. | Defer. |
+| `replace_symbol` | `not_started` | P2 | Not available | Requires AST range resolution and mutation flow. | Defer until edit stack exists. |
+| `rename_symbol` | `not_started` | P2 | Not available | Requires symbol index and careful multi-file diff/reporting. | Defer. |
+| `diagnostics_scan` | `not_started` | P3 | Not available | Dirac version is host/integration-heavy. | Optional later. |
+| `execute_command` | `not_started` | P3 | Not available | Powerful and risky. Needs explicit sandbox/permission policy before exposing. | Do not port without policy. |
 
-## Explicitly Out Of Scope
+## Technical Decisions
 
-| Dirac Tool/Area | Reason |
-| --- | --- |
-| `ask_followup_question` | Agent conversation workflow, not codebase tooling. |
-| `attempt_completion` | Agent task lifecycle, not MCP utility. |
-| `plan_mode_respond` | Dirac-specific mode workflow. |
-| `new_task` | Dirac task spawning/workflow. |
-| `summarize_task` | Dirac context/task management. |
-| `browser_action` | Browser session/UI state. Can be a separate MCP later if needed. |
-| `use_skill`, `list_skills` | Dirac/Claude skill workflow, not core codebase tool. |
-| `use_subagents` | Agent orchestration, not core codebase tool. |
-| CLI auth/history/provider setup | Dirac product/runtime concerns. |
-| VS Code webview/sidebar commands | UI-only concerns. |
+- Build a new MCP server instead of trying to run Dirac's `ToolExecutor`.
+- Reuse or port Dirac's pure logic where possible; replace UI callbacks with MCP responses or MCP errors.
+- Remove/no-op telemetry, approval UI, task workflow, webview behavior, provider/auth flow, and VS Code host behavior.
+- Keep tool APIs close to Dirac schemas unless MCP has a clear reason to differ.
+- Work in `mcp-server/` for implementation. Treat `dirac/` as read-only.
+- Use TypeScript `NodeNext`, strict mode, ESM, and explicit `.js` import specifiers.
+- Keep server creation separate from stdio startup so tests can instantiate the server with in-memory transports.
+- Runtime context is intentionally slim: `cwd`, `sessionId`, `workspaceRoots`.
+- Path resolution accepts relative paths against `RuntimeContext.cwd`; absolute paths are allowed only when inside configured workspace roots. Sibling-prefix escapes and traversal are rejected.
+- `.diracignore` support is deferred. Current protection is workspace-root containment plus built-in generated/hidden skips per tool.
+- `search_files` depends on system `rg` being available on `PATH`. Do not silently add a bundled binary without documenting packaging and licensing implications.
 
-## Shared Dependency Checklist
+## Known Residual Risks
 
-| Dependency Area | Status | Source Files | Notes |
-| --- | --- | --- | --- |
-| MCP server scaffold | `done` | `mcp-server/package.json`, `mcp-server/src/index.ts`, `mcp-server/src/server.ts` | TypeScript MCP SDK server with stdio transport. No Dirac tools registered yet. |
-| Runtime context | `ported` | `mcp-server/src/runtime/context.ts` | Minimal `cwd`, session id, and workspace roots. Needs path guard expansion before file tools. |
-| Path resolution | `done` | `src/core/workspace/*`, `src/utils/path.ts` | Slim MCP implementation added in `mcp-server/src/filesystem/workspace.ts`; supports cwd-relative/absolute paths, workspace-root guard, sibling-prefix rejection, Windows separator normalization, and stable relative paths. |
-| Ignore rules | `ported` | `src/core/ignore/DiracIgnoreController.ts` | Minimal generated-directory ignores implemented for `list_files`: `node_modules`, `dist`, `coverage`, `.git`. Full `.diracignore` support remains future work. |
-| Hash anchors | `not_started` | `src/utils/AnchorStateManager.ts`, `src/utils/line-hashing.ts`, `src/utils/.hash_anchors` | Required by `read_file`, `edit_file`, AST outputs. |
-| Tree-sitter parsing | `not_started` | `src/services/tree-sitter/*` | Requires WASM files from `tree-sitter-wasms`. Verify package layout in MCP package. |
-| Symbol index | `not_started` | `src/services/symbol-index/*` | Required by reference/rename tools. Decide persistence model. |
-| Diff formatting | `not_started` | `src/core/task/tools/handlers/edit-file/EditFormatter.ts`, `diff` | Needed for mutation tools. |
-| File extraction | `not_started` | `src/integrations/misc/extract-file-content.ts` | Text/PDF/DOCX/image handling. Can start text-only, then extend. |
+- `.diracignore` is not implemented, so ignore behavior is not full Dirac parity.
+- `read_file` is not implemented, so no hash anchors are available for future edit or AST tools.
+- `search_files` uses system `rg`; environments without ripgrep get a clear error but cannot search.
+- `search_files` structured output lacks Dirac's formatted hash-anchored lines.
+- `list_files` intentionally differs from Dirac by not returning line counts or mtimes.
+- Tree-sitter tools will require WASM asset packaging and query compatibility checks.
+- Editing tools need a headless design for direct writes, diff output, approval policy, diagnostics, and anchor drift.
+- Symbol-index tools need a persistence decision for `.dirac-symbol-index` versus session-scoped state.
+
+## Verification Commands
+
+Run from `c:\project\lamviec\dirac-mcp\mcp-server` when changing runtime/source/tests:
+
+```powershell
+npm run build
+npm run test
+npm run lint
+npm run typecheck
+```
+
+Docs-only sessions do not need the full suite unless they make or verify behavior claims. Always run:
+
+```powershell
+git status --short --branch
+git submodule status
+Test-Path mcp-server/dist
+git diff --stat
+```
+
+If `npm run build` creates `mcp-server/dist/`, remove it before finishing:
+
+```powershell
+Remove-Item -Recurse -Force mcp-server/dist
+```
+
+## Next Recommended Sessions
+
+1. Port `read_file`.
+   - Inspect upstream `src/core/prompts/system-prompt/tools/read_file.ts`.
+   - Inspect `src/core/task/tools/handlers/ReadFileToolHandler.ts`.
+   - Inspect `src/integrations/misc/extract-file-content.ts`, `src/utils/AnchorStateManager.ts`, and line-hashing utilities.
+   - Start text-file support first if binary/PDF/DOCX/image extraction is too large for one session.
+   - Preserve workspace-root guards and add MCP-level tests.
+
+2. Design anchor state for MCP sessions.
+   - Decide how `DIRAC_MCP_SESSION_ID` maps to `AnchorStateManager` task ids.
+   - Define lifecycle and memory behavior before edit tools depend on anchors.
+
+3. Prepare tree-sitter asset strategy.
+   - Verify `web-tree-sitter`, `tree-sitter-wasms`, query files, and package output layout.
+   - Do this before `get_file_skeleton` or `get_function`.
+
+## Future Sessions Must Avoid
+
+- Do not edit upstream `dirac/` files.
+- Do not port more than one tool or one small shared dependency per implementation session.
+- Do not add `read_file` or any new tool during documentation-only sessions.
+- Do not commit generated artifacts, especially `mcp-server/dist/`.
+- Do not expose `execute_command` without a deliberate sandbox/permission policy.
+- Do not mark a tool `done` until it is MCP-callable, tested, documented, and verified.
+- Do not push unless explicitly asked.
 
 ## Session Log
 
-Add one row per session. Keep it short so future sessions can resume quickly.
+Keep this short. Preserve useful history, but do not turn this tracker into a transcript.
 
-| Date | Session Goal | Status | Files Changed | Verification | Notes |
-| --- | --- | --- | --- | --- | --- |
-| 2026-04-29 | Clone Dirac and map tool porting strategy | `done` | `DIRAC_TOOL_PORTING_NOTES.md`, `PROJECT_PORTING_TRACKER.md` | Manual repo inspection | Confirmed no existing MCP server; plan is standalone MCP with codebase tools only. |
-| 2026-04-29 | Scaffold standalone MCP server foundation | `done` | `.gitignore`, `README.md`, `mcp-server/*`, `PROJECT_PORTING_TRACKER.md` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Created npm TypeScript MCP SDK package using stdio transport. No Dirac tool was ported. |
-| 2026-04-29 | Normalize git/project hygiene | `done` | `.gitignore`, `.gitmodules`, `README.md`, `PROJECT_PORTING_TRACKER.md` | `git status --short`; `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Initialized root git repo, recorded `dirac/` as submodule pinned to `e827ec30d4cdae078588df2040f203b780d657ad`, kept generated artifacts ignored. No Dirac tool was ported. |
-| 2026-04-29 | Port `list_files` and filesystem guard foundation | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/*`, `mcp-server/src/tools/list-files.ts`, `mcp-server/src/server.ts`, `mcp-server/test/*` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added reusable workspace path guard, deterministic read-only listing, generated-directory ignores, zod schemas, and MCP in-memory smoke test. |
-| 2026-04-29 | Harden `list_files` for commit readiness | `done` | `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/list-files.ts`, `mcp-server/test/list-files.test.ts`, `mcp-server/test/list-files-mcp.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added direct input validation, invalid-limit handling, duplicate result dedupe, missing-path fail-fast errors, and MCP out-of-workspace error coverage. No new Dirac tool was ported. |
-| 2026-04-29 | Standardize MCP tool registration and responses | `done` | `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/server.ts`, `mcp-server/src/tools/list-files.ts`, `mcp-server/src/tools/register.ts`, `mcp-server/src/tools/response.ts`, `mcp-server/test/tool-response.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Moved tool registration behind `registerTools`, added shared structured success and concise tool error response helpers, and refactored `list_files` to use them. No new Dirac tool was ported. |
-| 2026-04-29 | Production-readiness polish before `search_files` | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/list-files.ts`, `mcp-server/src/tools/list-files.ts`, `mcp-server/test/list-files.test.ts`, `mcp-server/test/list-files-mcp.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Aligned MCP limit schema with handler clamping, skipped symlink traversal for safer workspace boundaries, documented behavior, and removed generated `dist/` after verification. No new Dirac tool was ported. |
-| 2026-04-29 | Port read-only `search_files` MCP tool | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/search-files.ts`, `mcp-server/src/tools/register.ts`, `mcp-server/src/tools/search-files.ts`, `mcp-server/test/search-files.test.ts`, `mcp-server/test/search-files-mcp.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added system-ripgrep search with spawn args, workspace path guarding, generated-directory ignores, deterministic bounded structured results, invalid-regex/missing-rg errors, unit tests, and MCP smoke coverage. |
-| 2026-04-29 | Production-readiness review for `search_files` | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/search-files.ts`, `mcp-server/test/search-files.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Audited Dirac parity, MCP schema/output, path safety, ripgrep strategy, tests, and docs. Added pre-parse ripgrep output caps, overlapping-path result dedupe, reused shared workspace inside-root logic, and filled focused search_files tests. No new Dirac tool was ported. |
-| 2026-04-29 | Follow-up algorithmic parity review for `search_files` | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/search-files.ts`, `mcp-server/test/search-files.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Confirmed MCP uses Dirac's core `rg --json` search algorithm. Fixed the one material result-set gap by matching Dirac's dotfile/hidden-directory exclusions. No new Dirac tool was ported. |
-| 2026-04-29 | Real-repo smoke test `list_files` and `search_files` on pinned Dirac submodule | `done` | `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/list-files.ts`, `mcp-server/test/list-files.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP InMemory smoke against `dirac/` | Verified deterministic listing/search, truncation, workspace guarding, hidden/generated path handling, MCP-friendly errors, and bounded output. Fixed `list_files` leaking submodule-style `.git` files. Timings: recursive `list_files` limit 100 ~5.5 ms; `search_files` `ripgrep` limit 10/context 2 ~27 ms. No new Dirac tool was ported. |
-| 2026-04-29 | Production hardening/parity audit for `list_files` and `search_files` | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/test/list-files.test.ts`, `mcp-server/test/search-files.test.ts`, `mcp-server/test/search-files-mcp.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP InMemory smoke against `dirac/` | Re-read upstream handlers/core services and confirmed no runtime fixes were needed. Added regression coverage for list hidden behavior, multiple search matches, first-submatch-only same-line behavior, adjacent context, global truncation, byte columns, invalid-regex MCP errors, and out-of-workspace MCP errors. Smoke timings: recursive `list_files` limit 100 5.91 ms; `search_files` realistic pattern limit 10/context 2 33.02 ms. No new Dirac tool was ported. |
+| Date | Session Goal | Status | Verification | Notes |
+| --- | --- | --- | --- | --- |
+| 2026-04-29 | Clone Dirac and map tool porting strategy | `done` | Manual repo inspection | Confirmed no existing Dirac MCP runtime; chose standalone MCP server. |
+| 2026-04-29 | Scaffold MCP server and normalize repo hygiene | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; git/submodule checks | Created `mcp-server/`, npm TypeScript MCP SDK foundation, root git hygiene, and pinned `dirac/` submodule. No Dirac tool ported. |
+| 2026-04-29 | Port and harden `list_files` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP in-memory smoke | Added workspace path guard, deterministic listing, generated-directory and `.git` skips, symlink skip, limit validation/clamping, dedupe, concise errors, and MCP smoke coverage. |
+| 2026-04-29 | Standardize MCP tool registration/responses | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added `registerTools` and shared structured success/error helpers. No new Dirac tool ported. |
+| 2026-04-29 | Port and harden `search_files` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP in-memory smoke | Added system-ripgrep search, workspace guarding, hidden/generated path skips, bounded structured output, invalid-regex/missing-rg errors, byte-column and first-submatch caveat tests. |
+| 2026-04-29 | Real-repo smoke and parity audit for `list_files` / `search_files` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP smoke against `dirac/` | Re-read upstream handlers/core services, confirmed no runtime fixes needed, added parity/edge regression coverage, and fixed submodule-style `.git` listing leak. |
+| 2026-04-29 | Consolidate documentation for handoff clarity | `done` | Docs-only git/submodule/dist checks | Reorganized tracker as the operational source of truth and upstream notes as reference material. No code changed and no new Dirac tool ported. |
 
 ## Session Completion Template
-
-Use this at the end of each porting session:
 
 ```text
 Session:
