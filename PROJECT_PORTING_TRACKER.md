@@ -9,9 +9,9 @@ Operational source of truth for the standalone MCP port. Keep this file optimize
 - Transport: MCP stdio first. Do not add HTTP/SSE until a real consumer needs it.
 - Upstream source: `dirac/` is a pinned git submodule and read-only source material.
 - Pinned Dirac commit: `e827ec30d4cdae078588df2040f203b780d657ad`.
-- Current production-ready MCP tools: `list_files`, `read_file`, `search_files`, `edit_file`.
-- Shared tree-sitter runtime/asset foundation is implemented and verified, but no tree-sitter MCP tools are exposed yet.
-- No `get_file_skeleton`, `get_function`, symbol index, multi-file editing tools, or command execution are implemented.
+- Current production-ready MCP tools: `list_files`, `read_file`, `search_files`, `edit_file`, `get_file_skeleton`.
+- Shared tree-sitter runtime/asset foundation is implemented and verified, and `get_file_skeleton` is the first AST-backed MCP tool on top of it.
+- No `get_function`, symbol index, multi-file editing tools, or command execution are implemented.
 - Generated artifacts must stay out of git. In particular, remove `mcp-server/dist/` after any build.
 
 ## Production-Ready Tools
@@ -101,9 +101,41 @@ Dirac parity:
 - Parity accurate for anchor-first editing, exact anchor text validation intent, non-overlap rejection, bottom-to-top application, and anchor state refresh after write.
 - Intentionally different from Dirac: single file only, replace-only MCP schema, start anchor plus exact `oldText` instead of Dirac's full `Anchor§line_text` start/end anchors, no `insert_before`/`insert_after`, no multi-file batching, no approval UI, no VS Code diff provider, no diagnostics, no auto-format/user-edit feedback, no telemetry, and structured MCP JSON instead of Dirac UI text.
 
+### `get_file_skeleton`
+
+Status: production-ready under current MCP JS/TS AST scope.
+
+- MCP callable through `McpServer.registerTool`.
+- Read-only, idempotent, workspace-root guarded.
+- Accepts `paths` and optional `limit`; supported extensions are `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx`.
+- Reuses `src/tree-sitter/runtime.ts`; no second parser/runtime path.
+- Rejects unsupported extensions, missing paths, directories, symlinks, symlink escapes, out-of-workspace paths, rich/binary extensions, binary-looking files, invalid UTF-8, and files over the 1MB parse safety cap before parsing.
+- Returns structured `{ files, limit, truncated }`; each file includes absolute `path`, stable `relativePath`, `language`, `rootType`, `sourceLength`, `hasParseErrors`, `entryCount`, per-file `limit`, per-file `truncated`, and nested skeleton `entries`.
+- Skeleton entries are shaped as `{ kind, name, signature, location, children }`, with one-based line ranges and byte ranges.
+- Preserves imports, export-only statements, exported definitions, top-level functions/classes, class/interface methods, named arrow/function expressions, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
+- Parse recovery is explicit through `hasParseErrors`; syntax-error fixtures are covered.
+- Locations are non-edit metadata, not edit anchors. Use `read_file` to obtain edit-compatible anchors.
+
+Dirac parity:
+
+- Parity accurate for the core purpose of extracting a structural outline from tree-sitter captures, including nested definitions and JS/TS family support.
+- Intentionally different from Dirac: output is structured MCP JSON instead of Dirac's formatted anchored text; no `AnchorStateManager` integration; no call graph comments; no `.diracignore`; no approval UI/telemetry; JS/TS-family only for now.
+
+Real pinned Dirac smoke:
+
+- `dirac/src/services/tree-sitter/languageParser.ts`: TypeScript `program`, 5149 chars, no parse errors, 9 skeleton entries. Expected entries include `interface LanguageParser`, `function loadLanguage`, `function initializeParser`, and `function loadRequiredLanguageParsers`.
+- `dirac/src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`: TypeScript `program`, 7012 chars, no parse errors, 20 skeleton entries. Expected entries include `class GetFileSkeletonToolHandler`, `method constructor`, `method getDescription`, `method handlePartialBlock`, and `method execute`.
+- `dirac/scripts/file-utils.mjs`: JavaScript `program`, 739 chars, no parse errors, 5 skeleton entries. Expected entries include `function writeFileWithMkdirs`, `function rmrf`, and `function rmdir`.
+
+Current caveats:
+
+- Imports and export-only statements are top-level structural entries; exported declarations are represented by the exported definition signature rather than a separate wrapper entry.
+- `limit` truncates entries in preorder and preserves deterministic shape, but very large files still fail at the 1MB parse safety cap.
+- Constructor handling follows the current query assets: TypeScript constructors appear as methods, while JavaScript constructors are excluded by the JavaScript query predicate.
+
 ## Shared Tree-Sitter Runtime
 
-Status: production-ready shared foundation for future `get_file_skeleton` and `get_function` ports. No MCP tree-sitter tool is registered yet.
+Status: production-ready shared foundation for `get_file_skeleton` and future `get_function` ports.
 
 - Internal API: `src/tree-sitter/runtime.ts`.
 - Supported initial language set: JavaScript-family `.js`, `.jsx`, `.mjs`, `.cjs`; TypeScript-family `.ts`, `.tsx`.
@@ -112,12 +144,12 @@ Status: production-ready shared foundation for future `get_file_skeleton` and `g
 - WASM assets: build copies `node_modules/web-tree-sitter/tree-sitter.wasm` plus `tree-sitter-javascript.wasm`, `tree-sitter-typescript.wasm`, and `tree-sitter-tsx.wasm` from `tree-sitter-wasms/out/` into `dist/tree-sitter/assets/wasm/`.
 - Asset resolution is Windows-safe and uses `import.meta.url`/`fileURLToPath`, `createRequire(import.meta.url)`, `path.join`, and explicit candidate roots. It does not depend on process cwd. Source/test execution resolves source queries plus package WASM fallback; built execution can run with `includeNodeModulesFallback: false` and resolve only from `dist`.
 - Parser API returns typed parse results with language handle, query, tree, root node type, source length, asset paths, parse-error flag, and `dispose()` for tree cleanup. It deliberately does not expose the mutable `Parser` instance. Unsupported extensions and missing/init/language/query/parse failures produce explicit `TreeSitterRuntimeError` codes and concise messages.
-- Built-output smoke script: `dist/tree-sitter/smoke.js` after `npm run build`; it imports built JS and parses supplied files using only copied `dist` assets.
+- Built-output smoke script: `dist/tree-sitter/smoke.js` after `npm run build`; it imports built JS, parses supplied files using only copied `dist` assets for the parser smoke, and runs `get_file_skeleton` from built output.
 
 Current caveats:
 
 - Query assets are intentionally minimal compatibility queries for the initial JS/TS foundation. Full Dirac query parity for all upstream languages remains future work.
-- No AST anchor formatting, skeleton extraction, function lookup, symbol range lookup, or symbol index has been ported yet.
+- AST skeleton extraction is ported through `get_file_skeleton`. AST anchor formatting, function lookup, symbol range lookup, and symbol index remain unported.
 
 ## Tool Status Table
 
@@ -134,8 +166,8 @@ Status meanings:
 | `list_files` | `done` | P0 | Production-ready under MCP scope | Core listing behavior ported. Intentional differences: structured JSON, no line counts/mtimes, no `.diracignore`, hidden non-git paths visible. | Maintain only. |
 | `search_files` | `done` | P0 | Production-ready under MCP scope | Core ripgrep behavior ported. Hidden/dot path exclusion, byte columns, and first-submatch behavior documented. Intentional differences: structured JSON, no anchors, no `.diracignore`, system `rg`. | Maintain only. |
 | `read_file` | `done` | P0 | Production-ready under MCP text-file scope | Multi-path text reads, line ranges, FNV file hashes, edit-file compatibility metadata, deterministic session-scoped anchors, workspace safety, output caps, and MCP tests. Intentional differences: structured/line-numbered output, deterministic hash anchors, rich file extraction deferred. | Maintain; use anchors as the baseline for later edit design. |
-| `get_file_skeleton` | `not_started` | P1 | Not available as an MCP tool | Shared tree-sitter runtime/assets are ready for JS/TS. Still needs AST skeleton extraction, anchors, output schema, and MCP tests. | Port next using `src/tree-sitter/runtime.ts`. |
-| `get_function` | `not_started` | P1 | Not available as an MCP tool | Shared tree-sitter runtime/assets are ready for JS/TS. Still needs function range/name matching, context/anchors, output schema, and MCP tests. | Start after `get_file_skeleton`. |
+| `get_file_skeleton` | `done` | P1 | Production-ready under MCP JS/TS AST scope | Structured AST skeleton extraction ported. Intentional differences: structured JSON, non-edit locations instead of anchors, no call graph comments, no `.diracignore`, JS/TS-family only. | Maintain; use as foundation for `get_function`. |
+| `get_function` | `not_started` | P1 | Not available as an MCP tool | Shared tree-sitter runtime/assets and skeleton extraction patterns are ready for JS/TS. Still needs function range/name matching, context/anchors, output schema, and MCP tests. | Start next using `get_file_skeleton` patterns. |
 | `edit_file` | `done` | P1 | Production-ready under single-file MCP text/code scope | Anchor-first exact replacement ported and hardened with full-file hash freshness. Intentional differences: single file, replace-only `{ anchor, oldText, newText }`, deterministic diff summary, no Dirac UI/approval/diagnostics/multi-file flow. | Maintain only. |
 | `find_symbol_references` | `not_started` | P2 | Not available | Requires symbol index and SQLite WASM or a deliberate alternative. | Defer. |
 | `replace_symbol` | `not_started` | P2 | Not available | Requires AST range resolution and mutation flow. | Defer until edit stack exists. |
@@ -176,6 +208,8 @@ Status meanings:
 - `search_files` structured output lacks Dirac's formatted hash-anchored lines.
 - `list_files` intentionally differs from Dirac by not returning line counts or mtimes.
 - Tree-sitter foundation currently packages JS/TS/TSX WASM and JS/TS query assets only. Additional languages need deliberate query and grammar smoke coverage before exposure.
+- `get_file_skeleton` locations are not edit anchors. Agents must use `read_file` before `edit_file`.
+- `get_file_skeleton` does not compute Dirac call graph comments and does not integrate `.diracignore`.
 - Tree-sitter queries are minimal `.scm` compatibility assets and are not yet full upstream Dirac parity across all languages or call-graph captures.
 - Editing tools need a headless design for direct writes, diff output, approval policy, diagnostics, and anchor drift.
 - Symbol-index tools need a persistence decision for `.dirac-symbol-index` versus session-scoped state.
@@ -208,13 +242,9 @@ Remove-Item -Recurse -Force mcp-server/dist
 
 ## Next Recommended Sessions
 
-1. Port `get_file_skeleton`.
-   - Keep the session scoped to one tree-sitter tool and its shared packaging needs.
-   - Do not expand `edit_file` during the tree-sitter session.
-   - Reuse `src/tree-sitter/runtime.ts`; do not rediscover WASM/query asset resolution.
-
-2. Port `get_function` after `get_file_skeleton`.
+1. Port `get_function`.
    - Reuse the same parser/query runtime and integrate deterministic MCP anchors deliberately.
+   - Use the `get_file_skeleton` safety checks, structured output style, real-repo smoke pattern, and built-output smoke path as the baseline.
 
 ## Future Sessions Must Avoid
 
@@ -245,6 +275,7 @@ Keep this short. Preserve useful history, but do not turn this tracker into a tr
 | 2026-04-29 | Harden anchored `edit_file` freshness | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added stored full-file hash snapshots to anchor state, stale hash rejection before writes, restart/reset no-anchor coverage, same-line-count external/cross-session tests, documented 1MB edit mutation cap. No new tool ported. |
 | 2026-04-29 | Surface edit mutation cap during reads | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added `read_file` edit-file compatibility metadata/warnings for files over the 1MB mutation cap and improved oversized `edit_file` error guidance. No new tool ported. |
 | 2026-04-29 | Prepare tree-sitter runtime and assets | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; built `dist` smoke against pinned Dirac files | Added exact `web-tree-sitter@0.22.6`, `tree-sitter-wasms@^0.1.13`, MCP-owned JS/TS `.scm` queries, build asset copy script, reusable parser runtime, parser tests, and built-output smoke. Smoke: `dirac/src/services/tree-sitter/languageParser.ts` TypeScript `program`, 5333 chars, no parse errors; `dirac/scripts/file-utils.mjs` JavaScript `program`, 766 chars, no parse errors; all assets loaded from `dist`. No MCP tree-sitter tool ported. Follow-up hardening removed cwd-relative package lookup, removed empty asset-root trick, added process-global init guard, simplified query cache keys, stopped exposing mutable parser instances, and added tree disposal/test coverage. |
+| 2026-04-29 | Port AST-backed `get_file_skeleton` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; built `dist` smoke against pinned Dirac files | Added safe file loading, structured skeleton extraction, MCP registration, hard fixture tests, MCP in-memory smoke, real Dirac repo smoke, and docs. Real smoke: `languageParser.ts` 5149 chars/9 entries/no parse errors; `GetFileSkeletonToolHandler.ts` 7012 chars/20 entries/no parse errors; `file-utils.mjs` 739 chars/5 entries/no parse errors. Locations are non-edit metadata; use `read_file` for anchors. |
 
 ## Session Completion Template
 
