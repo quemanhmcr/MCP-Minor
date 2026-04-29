@@ -22,12 +22,15 @@ describe("searchWorkspaceFiles", () => {
     await fs.mkdir(path.join(workspaceRoot, "node_modules", "pkg"), { recursive: true });
     await fs.mkdir(path.join(workspaceRoot, "dist"), { recursive: true });
     await fs.mkdir(path.join(workspaceRoot, "coverage"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, ".hidden"), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, "src", "a.ts"), "alpha\nconst target = 1;\nomega\n");
     await fs.writeFile(path.join(workspaceRoot, "src", "nested", "b.ts"), "export const nestedTarget = true;\n");
     await fs.writeFile(path.join(workspaceRoot, "docs", "guide.md"), "target in docs\n");
     await fs.writeFile(path.join(workspaceRoot, "node_modules", "pkg", "index.js"), "target in dependency\n");
     await fs.writeFile(path.join(workspaceRoot, "dist", "bundle.js"), "target in build output\n");
     await fs.writeFile(path.join(workspaceRoot, "coverage", "report.txt"), "target in coverage\n");
+    await fs.writeFile(path.join(workspaceRoot, ".env"), "target in dotfile\n");
+    await fs.writeFile(path.join(workspaceRoot, ".hidden", "secret.txt"), "target in hidden directory\n");
   });
 
   afterEach(async () => {
@@ -75,6 +78,17 @@ describe("searchWorkspaceFiles", () => {
     expect(result.matches.map((entry) => entry.relativePath)).not.toContain("node_modules/pkg/index.js");
     expect(result.matches.map((entry) => entry.relativePath)).not.toContain("dist/bundle.js");
     expect(result.matches.map((entry) => entry.relativePath)).not.toContain("coverage/report.txt");
+  });
+
+  it("skips dotfiles and hidden directories like Dirac search_files", async () => {
+    const rootResult = await searchWorkspaceFiles(context, { paths: ["."], regex: "target" });
+    const explicitDotfileResult = await searchWorkspaceFiles(context, { paths: [".env"], regex: "target" });
+    const explicitHiddenDirectoryResult = await searchWorkspaceFiles(context, { paths: [".hidden"], regex: "target" });
+
+    expect(rootResult.matches.map((entry) => entry.relativePath)).not.toContain(".env");
+    expect(rootResult.matches.map((entry) => entry.relativePath)).not.toContain(".hidden/secret.txt");
+    expect(explicitDotfileResult.matches).toEqual([]);
+    expect(explicitHiddenDirectoryResult.matches).toEqual([]);
   });
 
   it("returns bounded context preview when requested", async () => {

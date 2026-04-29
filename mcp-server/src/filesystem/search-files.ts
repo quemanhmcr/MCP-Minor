@@ -130,6 +130,10 @@ export async function searchWorkspaceFiles(
     "--glob",
     filePattern ?? "*",
     "--glob",
+    "!.*",
+    "--glob",
+    "!**/.*",
+    "--glob",
     "!**/node_modules/**",
     "--glob",
     "!**/dist/**",
@@ -454,7 +458,7 @@ function isIgnoredRelativePath(relativePath: string): boolean {
   return relativePath
     .split("/")
     .filter((part) => part.length > 0 && part !== ".")
-    .some((part) => IGNORED_DIRECTORY_NAMES.has(part));
+    .some((part) => part.startsWith(".") || IGNORED_DIRECTORY_NAMES.has(part));
 }
 
 function isInsideResolvedRoot(workspaceRoot: string, absolutePath: string): boolean {
