@@ -64,4 +64,76 @@ describe("search_files MCP tool", () => {
       await server.close();
     }
   });
+
+  it("returns an MCP-friendly invalid regex error", async () => {
+    const server = createMcpServer({
+      cwd: workspaceRoot,
+      sessionId: "test",
+      workspaceRoots: [workspaceRoot],
+    });
+    const client = new Client({
+      name: "test-client",
+      version: "0.0.0",
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: "search_files",
+        arguments: {
+          paths: ["src"],
+          regex: "[",
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.type).toBe("text");
+      expect(content[0]?.text).toMatch(/regex|parse/i);
+      expect(content[0]?.text).not.toMatch(/at .*searchWorkspaceFiles/);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns an MCP-friendly out-of-workspace error", async () => {
+    const server = createMcpServer({
+      cwd: workspaceRoot,
+      sessionId: "test",
+      workspaceRoots: [workspaceRoot],
+    });
+    const client = new Client({
+      name: "test-client",
+      version: "0.0.0",
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: "search_files",
+        arguments: {
+          paths: [".."],
+          regex: "searchable",
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: "Path '..' resolves outside the configured workspace roots.",
+        },
+      ]);
+      expect(result.structuredContent).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });

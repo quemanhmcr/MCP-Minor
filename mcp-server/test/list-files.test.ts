@@ -21,12 +21,15 @@ describe("listWorkspaceFiles", () => {
     await fs.mkdir(path.join(workspaceRoot, "docs"), { recursive: true });
     await fs.mkdir(path.join(workspaceRoot, "node_modules", "pkg"), { recursive: true });
     await fs.mkdir(path.join(workspaceRoot, "dist"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, ".hidden"), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, "README.md"), "readme");
     await fs.writeFile(path.join(workspaceRoot, "src", "a.ts"), "a");
     await fs.writeFile(path.join(workspaceRoot, "src", "nested", "b.ts"), "b");
     await fs.writeFile(path.join(workspaceRoot, "docs", "guide.md"), "guide");
     await fs.writeFile(path.join(workspaceRoot, "node_modules", "pkg", "index.js"), "ignored");
     await fs.writeFile(path.join(workspaceRoot, "dist", "bundle.js"), "ignored");
+    await fs.writeFile(path.join(workspaceRoot, ".env"), "hidden file");
+    await fs.writeFile(path.join(workspaceRoot, ".hidden", "secret.txt"), "hidden directory");
     await fs.writeFile(path.join(workspaceRoot, ".git"), "gitdir: ../.git/modules/example");
   });
 
@@ -72,6 +75,15 @@ describe("listWorkspaceFiles", () => {
     expect(result.entries.map((entry) => entry.relativePath)).not.toContain("node_modules/pkg/index.js");
     expect(result.entries.map((entry) => entry.relativePath)).not.toContain("dist");
     expect(result.entries.map((entry) => entry.relativePath)).not.toContain("dist/bundle.js");
+  });
+
+  it("keeps non-git hidden paths visible for list_files", async () => {
+    const rootResult = await listWorkspaceFiles(context, { paths: ["."], recursive: false });
+    const hiddenResult = await listWorkspaceFiles(context, { paths: [".hidden"], recursive: true });
+
+    expect(rootResult.entries.map((entry) => entry.relativePath)).toContain(".env");
+    expect(rootResult.entries.map((entry) => entry.relativePath)).toContain(".hidden");
+    expect(hiddenResult.entries.map((entry) => entry.relativePath)).toEqual([".hidden/secret.txt"]);
   });
 
   it("does not follow directory symlinks during recursive listing", async () => {

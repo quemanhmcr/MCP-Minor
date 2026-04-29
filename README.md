@@ -57,8 +57,14 @@ npm run dev
 
 ## Tools
 
-- `list_files`: read-only listing for one or more files/directories. Input: `paths: string[]`, optional `recursive`, optional `limit`. Oversized limits are clamped by the server. Results include absolute `path`, `type`, and stable workspace-relative `relativePath`. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped. Symlinks are not followed.
-- `search_files`: read-only Rust-regex search using system `rg`. Input: `paths: string[]`, `regex: string`, optional `filePattern`, optional `contextLines`, optional `limit`. Results include absolute `path`, stable `relativePath`, `line`, optional `column`, matched text, and optional bounded preview context. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped, as are dotfiles and hidden directories. Symlinks are not followed by default ripgrep traversal.
+- `list_files`: read-only listing for one or more files/directories. Input: `paths: string[]`, optional `recursive`, optional `limit`. Oversized limits are clamped by the server. Results include absolute `path`, `type`, and stable workspace-relative `relativePath`. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped, including submodule-style `.git` files. Other dotfiles and hidden directories remain visible to support explicit codebase inspection. Symlinks are not followed.
+- `search_files`: read-only Rust-regex search using system `rg`. Input: `paths: string[]`, `regex: string`, optional `filePattern`, optional `contextLines`, optional `limit`. Results include absolute `path`, stable `relativePath`, `line`, optional `column`, matched text, and optional bounded preview context. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped, as are dotfiles and hidden directories, including when targeted explicitly. Symlinks are not followed by default ripgrep traversal.
+
+Production caveats for the current read-only tools:
+
+- `.diracignore` is not implemented in the standalone MCP server yet; access is constrained by configured workspace roots plus the built-in skips above.
+- `search_files` uses ripgrep JSON output. `column` is the 1-based ripgrep byte column, and multiple regex submatches on the same line are represented by the first submatch only.
+- `search_files.limit` is a global MCP result limit after parsing. The server also passes `--max-count` to ripgrep as a per-file safety bound and caps captured stdout to avoid unbounded memory use.
 
 ## Git Hygiene
 
