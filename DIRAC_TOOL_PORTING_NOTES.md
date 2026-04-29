@@ -109,7 +109,12 @@ Tree-sitter:
 
 - Required by `get_file_skeleton`, `get_function`, `replace_symbol`, and parts of symbol tooling.
 - Relevant dependencies include `web-tree-sitter`, `tree-sitter-wasms`, and query files under `src/services/tree-sitter/queries`.
-- Standalone packaging must copy or resolve WASM assets correctly from built `dist/`.
+- Standalone packaging now uses exact `web-tree-sitter@0.22.6` and `tree-sitter-wasms@^0.1.13`, matching upstream Dirac's compatible package line. `web-tree-sitter@0.26` was tested and rejected because it failed to load the `tree-sitter-wasms@0.1.13` grammar binaries.
+- The MCP package owns initial JavaScript/TypeScript `.scm` query assets in `mcp-server/src/tree-sitter/queries/` instead of importing upstream `.ts` query modules directly. This keeps query assets explicit and copyable for built `dist/`.
+- `mcp-server/scripts/copy-tree-sitter-assets.mjs` copies `web-tree-sitter` runtime WASM and JS/TS/TSX grammar WASM into `dist/tree-sitter/assets/wasm/`, and copies query assets into `dist/tree-sitter/assets/queries/`.
+- `mcp-server/src/tree-sitter/runtime.ts` resolves source/test assets via `import.meta.url` plus `createRequire(import.meta.url)` package fallback, and built assets from adjacent `dist/tree-sitter/assets/`. It avoids process-cwd package lookup. The built smoke path can run with `includeNodeModulesFallback: false` to prove packaged assets are sufficient.
+- `Parser.init()` is treated as process-global: the runtime records the initialized runtime WASM path, rejects later attempts to initialize with a different path, and resets state after init failure so retries are possible.
+- Initial supported extensions are `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx`. Additional upstream languages should be added only with grammar, query, source-test, built-smoke, and real-repo coverage.
 
 Symbol index:
 

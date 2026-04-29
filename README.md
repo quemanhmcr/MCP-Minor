@@ -62,6 +62,10 @@ npm run dev
 - `search_files`: read-only Rust-regex search using system `rg`. Input: `paths: string[]`, `regex: string`, optional `filePattern`, optional `contextLines`, optional `limit`. Results include absolute `path`, stable `relativePath`, `line`, optional `column`, matched text, and optional bounded preview context. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped, as are dotfiles and hidden directories, including when targeted explicitly. Symlinks are not followed by default ripgrep traversal.
 - `edit_file`: single-file anchored text/code replacement. Input: `path: string`, `edits: { anchor, oldText, newText }[]`. Call `read_file` first in the same MCP session and use the returned per-line `anchor` plus exact current `oldText`. The anchor identifies the start line only; the replacement span is the number of logical lines in `oldText`. `oldText` must match exactly at that start line after newline normalization, or the call is rejected. Multiple edits in the same file are allowed only when their resolved `oldText` spans do not overlap. The server validates the current file hash and every edit before writing, applies edits bottom-to-top, writes the file once, refreshes anchor state and the stored file hash after success, and returns stable structured output with `path`, `relativePath`, `changed: true`, `editsApplied`, before/after file hashes, detected line ending, per-edit line summary, and a deterministic patch summary.
 
+Shared parser foundation:
+
+- Tree-sitter runtime/assets are packaged for future JS/TS AST tools, but no tree-sitter MCP tool is exposed yet. `npm run build` copies `web-tree-sitter` runtime WASM, JS/TS/TSX grammar WASM, and MCP-owned JS/TS query assets into `dist/tree-sitter/assets/` so built output can parse without reaching into `node_modules`.
+
 Production caveats for the current tools:
 
 - `.diracignore` is not implemented in the standalone MCP server yet; access is constrained by configured workspace roots plus the built-in skips above.

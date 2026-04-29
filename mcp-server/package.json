@@ -11,7 +11,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-tree-sitter-assets.mjs",
     "dev": "tsx src/index.ts",
     "lint": "eslint .",
     "test": "vitest run",
@@ -19,6 +19,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "0.22.6",
     "zod": "^3.25.76"
   },
   "devDependencies": {
