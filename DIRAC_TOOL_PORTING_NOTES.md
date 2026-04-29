@@ -122,6 +122,12 @@ Editing:
 - `EditExecutor` is the cleanest pure component: it resolves anchors, verifies anchor text, and applies non-overlapping edits in memory. The MCP anchor contract should keep that shape: future `edit_file` should resolve anchors from current session/file state, require exact line-text matches from the `Anchor§line_text` reference, reject stale anchors, prevent one anchor from resolving to multiple lines, and reconcile anchors again after a successful write.
 - `BatchProcessor` mixes pure edit flow with approval UI, VS Code diff saving, diagnostics, and file tracking.
 - MCP mutation tools need a headless write path, diff output, and failure reporting.
+- The first MCP `edit_file` port deliberately narrows Dirac's schema. Dirac accepts `files[]`, per-edit `edit_type`, `anchor`, `end_anchor`, and `text`, with `replace`, `insert_after`, and `insert_before`. The MCP tool accepts one `path` and `edits: { anchor, oldText, newText }[]` only.
+- MCP `edit_file` anchor semantics: `anchor` is the start line from same-session `read_file`; the replacement span is derived from the number of logical lines in `oldText`. This avoids adding `end_anchor` until the current `read_file` contract needs it and keeps stale validation centered on exact current text.
+- MCP `edit_file` stale behavior is more conservative than Dirac's prepare path. Dirac reconciles anchors against current file content before resolving edits; MCP consumes the existing anchor snapshot first, rejects line-count drift as stale, and requires exact `oldText` at the tracked start line.
+- MCP `edit_file` applies all validated non-overlapping ranges bottom-to-top, writes once, then reconciles anchor state from the final file lines. Validation failures produce no write.
+- MCP `edit_file` normalizes requested `oldText`/`newText` and current file content to LF for logical matching and deterministic diff output, while writing back with the file's dominant existing EOL and preserving final newline presence.
+- MCP `edit_file` omits Dirac's approval UI, VS Code diff provider, dirty document save, diagnostics, auto-format/user-edit feedback, telemetry, multi-file batching, and insert-specific operations.
 
 Ignore rules:
 
@@ -163,11 +169,24 @@ Ripgrep:
   - Uses deterministic session-scoped `Axxxxxxxx` anchors and FNV-1a content hashes.
   - Defers rich file extraction with explicit unsupported-file errors.
 
+`edit_file`:
+
+- MCP production-ready under the current standalone single-file text/code scope.
+- Upstream behavior inspected:
+  - Schema accepts multi-file `files[]`, per-edit `edit_type`, `anchor`, `end_anchor`, and replacement `text`.
+  - `EditExecutor` resolves anchors, validates provided anchor line text, rejects reversed replace ranges, applies sorted edits bottom-to-top, and strips hashes from replacement text.
+  - `BatchProcessor` groups blocks by path, prepares edits, routes through approval/diff UI and diagnostics, saves via host/diff provider, and refreshes `AnchorStateManager` after save.
+  - `EditFormatter` returns Dirac-oriented anchored diff/result text and optionally full updated file content for extensive edits.
+- MCP behavior:
+  - Accepts one `path` and `edits: { anchor, oldText, newText }[]`.
+  - Requires same-session `read_file` anchor state and exact `oldText` at the tracked start line.
+  - Rejects stale line-count drift, unknown anchors, oldText mismatches, overlapping spans, and file safety errors before writing.
+  - Applies edits bottom-to-top, writes once, refreshes anchor state, and returns structured output plus deterministic patch summary.
+  - Defers multi-file batching, insert-specific operations, end-anchor ranges, approval UI, diagnostics, dirty-file mediation, and auto-format feedback.
+
 ## Next Likely Tool Area
 
-`read_file` and anchor behavior are now stable enough to use as source material for future edit design. The next likely preparatory work is tree-sitter asset packaging for `get_file_skeleton` / `get_function`, or a focused design pass for headless `edit_file` consumption of current MCP anchors.
-
-Do not start editing tools until direct-write, diff output, stale-anchor, and dirty-file behavior are specified.
+`read_file` and the single-file `edit_file` foundation are now stable enough for conservative text/code editing. The next likely preparatory work is tree-sitter asset packaging for `get_file_skeleton` / `get_function`, or a separate design pass for optional `edit_file` insert/end-anchor extensions.
 
 ## Risks For Anchors, Tree-Sitter, And Editing
 
@@ -176,7 +195,7 @@ Do not start editing tools until direct-write, diff output, stale-anchor, and di
 - Reorders/moves: MCP reconciliation preserves an ordered unchanged subsequence, matching Dirac's diff-style assumptions. It does not try to preserve every moved line across arbitrary reorder operations because that can make stale anchor reuse ambiguous for editing.
 - Tree-sitter assets: WASM and query files must resolve after TypeScript build, not only from source-tree execution.
 - AST parity: `ASTAnchorBridge` assumes upstream parser/index behavior and may need adaptation for MCP output shapes.
-- Mutation safety: editing tools must avoid overlapping edits, stale anchors, partial writes, and unclear diff reporting.
+- Mutation safety: current `edit_file` avoids overlapping edits, stale line-count drift, oldText mismatches, and partial writes for single-file replacement. Future mutation extensions must preserve those guarantees.
 - Host replacement: upstream mutation paths call VS Code-ish services such as `DiffViewProvider`, diagnostics providers, and `HostProvider.workspace.saveOpenDocumentIfDirty`; MCP needs direct filesystem equivalents or explicit omissions.
 - Symbol index persistence: `.dirac-symbol-index` may be undesirable for a standalone MCP server unless the user opts in.
 - Command execution: `execute_command` should remain unported until a sandbox/permission model is defined.
@@ -188,6 +207,6 @@ Do not start editing tools until direct-write, diff output, stale-anchor, and di
 3. Add tree-sitter packaging support.
 4. Port `get_file_skeleton`.
 5. Port `get_function`.
-6. Port `edit_file` with direct writes and diff output.
+6. Maintain `edit_file`; consider insert/end-anchor extensions only in a dedicated session.
 7. Consider symbol-index tools after persistence is decided.
 8. Consider `execute_command` only with an explicit policy.

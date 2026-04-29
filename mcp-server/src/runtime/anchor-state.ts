@@ -13,6 +13,10 @@ interface TrackedDocument {
 
 const storage = new Map<string, Map<string, TrackedDocument>>();
 
+export interface AnchorSnapshot {
+  anchors: string[];
+}
+
 export function getAnchorDelimiter(): string {
   return ANCHOR_DELIMITER;
 }
@@ -47,6 +51,19 @@ export function reconcileAnchors(sessionId: string, absolutePath: string, lines:
   });
 
   return anchors;
+}
+
+export function getAnchorSnapshot(sessionId: string, absolutePath: string): AnchorSnapshot | null {
+  const sessionState = storage.get(sessionId);
+  const tracked = sessionState?.get(normalizeAbsolutePath(absolutePath));
+
+  if (!tracked) {
+    return null;
+  }
+
+  return {
+    anchors: [...tracked.anchors],
+  };
 }
 
 export function resetAnchorState(sessionId?: string): void {
