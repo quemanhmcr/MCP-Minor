@@ -182,7 +182,8 @@ async function readOneFile(
 
   const text = await readTextFile(resolved, stat);
   const allLines = splitLines(text);
-  const allAnchors = reconcileAnchors(context.sessionId, resolved.absolutePath, allLines);
+  const fileHash = contentHash(text);
+  const allAnchors = reconcileAnchors(context.sessionId, resolved.absolutePath, allLines, fileHash);
   const startLine = range.startLine ?? 1;
   const requestedEndLine = range.endLine ?? allLines.length;
   const boundedStartIndex = Math.min(startLine - 1, allLines.length);
@@ -207,7 +208,7 @@ async function readOneFile(
   return {
     path: resolved.absolutePath,
     relativePath: resolved.relativePath,
-    fileHash: contentHash(text),
+    fileHash,
     totalLines: allLines.length,
     startLine,
     endLine: lines.length === 0 ? Math.min(requestedEndLine, allLines.length) : lines[lines.length - 1].line,

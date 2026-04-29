@@ -124,6 +124,20 @@ describe("editWorkspaceFile", () => {
     ).rejects.toThrow("is not known");
   });
 
+  it("rejects when anchor state is missing after reset or restart", async () => {
+    const anchors = await readAnchors("src/main.ts");
+    resetAnchorState(context.sessionId);
+
+    await expect(
+      editWorkspaceFile(context, {
+        path: "src/main.ts",
+        edits: [{ anchor: anchors.beta, oldText: "beta", newText: "BETA" }],
+      }),
+    ).rejects.toThrow("Path 'src/main.ts' has no anchor state. Call read_file on this file before edit_file.");
+
+    await expect(readFile("src/main.ts")).resolves.toBe("alpha\nbeta\ngamma\ndelta\n");
+  });
+
   it("rejects stale anchor state after external line-count changes", async () => {
     const anchors = await readAnchors("src/main.ts");
     await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "inserted\nalpha\nbeta\ngamma\ndelta\n");
@@ -133,7 +147,55 @@ describe("editWorkspaceFile", () => {
         path: "src/main.ts",
         edits: [{ anchor: anchors.beta, oldText: "beta", newText: "BETA" }],
       }),
-    ).rejects.toThrow("stale anchor state");
+    ).rejects.toThrow("changed since the last read_file in this session");
+  });
+
+  it("rejects same-line-count external modifications before target edit", async () => {
+    const anchors = await readAnchors("src/main.ts");
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "alpha\nBETA\ngamma\ndelta\n");
+
+    await expect(
+      editWorkspaceFile(context, {
+        path: "src/main.ts",
+        edits: [{ anchor: anchors.gamma, oldText: "gamma", newText: "GAMMA" }],
+      }),
+    ).rejects.toThrow("changed since the last read_file in this session");
+
+    await expect(readFile("src/main.ts")).resolves.toBe("alpha\nBETA\ngamma\ndelta\n");
+  });
+
+  it("rejects same-line-count cross-session stale edits", async () => {
+    const sessionA: RuntimeContext = { ...context, sessionId: "session-a" };
+    const sessionB: RuntimeContext = { ...context, sessionId: "session-b" };
+    const anchorsA = await readAnchorsFor(sessionA, "src/main.ts");
+    const anchorsB = await readAnchorsFor(sessionB, "src/main.ts");
+
+    await editWorkspaceFile(sessionA, {
+      path: "src/main.ts",
+      edits: [{ anchor: anchorsA.beta, oldText: "beta", newText: "BETA" }],
+    });
+
+    await expect(
+      editWorkspaceFile(sessionB, {
+        path: "src/main.ts",
+        edits: [{ anchor: anchorsB.gamma, oldText: "gamma", newText: "GAMMA" }],
+      }),
+    ).rejects.toThrow("changed since the last read_file in this session");
+
+    await expect(readFile("src/main.ts")).resolves.toBe("alpha\nBETA\ngamma\ndelta\n");
+  });
+
+  it("succeeds after re-reading following an external same-line-count modification", async () => {
+    await readAnchors("src/main.ts");
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "alpha\nBETA\ngamma\ndelta\n");
+
+    const refreshed = await readAnchors("src/main.ts");
+    await editWorkspaceFile(context, {
+      path: "src/main.ts",
+      edits: [{ anchor: refreshed.gamma, oldText: "gamma", newText: "GAMMA" }],
+    });
+
+    await expect(readFile("src/main.ts")).resolves.toBe("alpha\nBETA\nGAMMA\ndelta\n");
   });
 
   it("rejects oldText mismatches", async () => {
@@ -163,6 +225,23 @@ describe("editWorkspaceFile", () => {
     ).rejects.toThrow("oldText mismatch");
 
     await expect(readFile("src/main.ts")).resolves.toBe("alpha\nbeta\ngamma\ndelta\n");
+  });
+
+  it("does not partially write when stale hash mismatch occurs in a multi-edit call", async () => {
+    const anchors = await readAnchors("src/main.ts");
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "alpha\nBETA\ngamma\ndelta\n");
+
+    await expect(
+      editWorkspaceFile(context, {
+        path: "src/main.ts",
+        edits: [
+          { anchor: anchors.alpha, oldText: "alpha", newText: "ALPHA" },
+          { anchor: anchors.gamma, oldText: "gamma", newText: "GAMMA" },
+        ],
+      }),
+    ).rejects.toThrow("changed since the last read_file in this session");
+
+    await expect(readFile("src/main.ts")).resolves.toBe("alpha\nBETA\ngamma\ndelta\n");
   });
 
   it("refreshes anchor state after successful edits", async () => {
@@ -198,6 +277,25 @@ describe("editWorkspaceFile", () => {
     });
 
     await expect(readFile("src/main.ts")).resolves.toBe("alpha\nbeta2\ngamma\ndelta\n");
+  });
+
+  it("refreshes stored hash after successful write for a subsequent edit using updated anchors", async () => {
+    const anchors = await readAnchors("src/main.ts");
+    await editWorkspaceFile(context, {
+      path: "src/main.ts",
+      edits: [{ anchor: anchors.beta, oldText: "beta", newText: "BETA" }],
+    });
+
+    const updated = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+    const gammaAnchor = updated.files[0].lines.find((line) => line.text === "gamma")?.anchor;
+    expect(gammaAnchor).toBeDefined();
+
+    await editWorkspaceFile(context, {
+      path: "src/main.ts",
+      edits: [{ anchor: gammaAnchor!, oldText: "gamma", newText: "GAMMA" }],
+    });
+
+    await expect(readFile("src/main.ts")).resolves.toBe("alpha\nBETA\nGAMMA\ndelta\n");
   });
 
   it("rejects missing files", async () => {
@@ -254,7 +352,7 @@ describe("editWorkspaceFile", () => {
     await fs.writeFile(path.join(workspaceRoot, "large.txt"), `${"x".repeat(1024 * 1024 + 1)}\n`);
 
     await expect(editWorkspaceFile(context, { path: "large.txt", edits: [dummyEdit()] })).rejects.toThrow(
-      "too large to edit safely",
+      "exceeds the 1MB edit mutation cap",
     );
   });
 
@@ -283,7 +381,11 @@ describe("editWorkspaceFile", () => {
   });
 
   async function readAnchors(relativePath: string): Promise<Record<string, string>> {
-    const result = await readWorkspaceFiles(context, { paths: [relativePath] });
+    return readAnchorsFor(context, relativePath);
+  }
+
+  async function readAnchorsFor(readContext: RuntimeContext, relativePath: string): Promise<Record<string, string>> {
+    const result = await readWorkspaceFiles(readContext, { paths: [relativePath] });
     return Object.fromEntries(result.files[0].lines.map((line) => [line.text, line.anchor]));
   }
 

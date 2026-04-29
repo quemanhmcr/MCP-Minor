@@ -78,6 +78,44 @@ describe("edit_file MCP tool", () => {
     }
   });
 
+  it("supports read_file -> edit_file -> read_file -> edit_file after hash refresh", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const betaAnchor = await readAnchor(client, "beta");
+      const firstEdit = await client.callTool({
+        name: "edit_file",
+        arguments: {
+          path: "src/file.ts",
+          edits: [{ anchor: betaAnchor, oldText: "beta", newText: "BETA" }],
+        },
+      });
+      expect(firstEdit.isError).toBeUndefined();
+
+      const gammaAnchor = await readAnchor(client, "gamma");
+      const secondEdit = await client.callTool({
+        name: "edit_file",
+        arguments: {
+          path: "src/file.ts",
+          edits: [{ anchor: gammaAnchor, oldText: "gamma", newText: "GAMMA" }],
+        },
+      });
+
+      expect(secondEdit.isError).toBeUndefined();
+      const finalRead = await client.callTool({
+        name: "read_file",
+        arguments: { paths: ["src/file.ts"] },
+      });
+      const structured = finalRead.structuredContent as {
+        files: Array<{ lines: Array<{ text: string }> }>;
+      };
+      expect(structured.files[0].lines.map((line) => line.text)).toEqual(["alpha", "BETA", "GAMMA"]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("returns MCP-friendly stale or mismatch errors", async () => {
     const { client, server } = await connectClient(workspaceRoot);
 
@@ -96,6 +134,63 @@ describe("edit_file MCP tool", () => {
       const content = result.content as Array<{ type: string; text: string }>;
       expect(content[0].text).toContain("oldText mismatch");
       expect(content[0].text).not.toContain("\n    at ");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns MCP-friendly stale hash mismatch errors without stack traces", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const gammaAnchor = await readAnchor(client, "gamma");
+      await fs.writeFile(path.join(workspaceRoot, "src", "file.ts"), "alpha\nBETA\ngamma\n");
+
+      const result = await client.callTool({
+        name: "edit_file",
+        arguments: {
+          path: "src/file.ts",
+          edits: [{ anchor: gammaAnchor, oldText: "gamma", newText: "GAMMA" }],
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0].text).toBe(
+        "Path 'src/file.ts' changed since the last read_file in this session. Call read_file again before edit_file.",
+      );
+      expect(content[0].text).not.toContain("\n    at ");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns MCP-friendly missing anchor state errors after reset", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const betaAnchor = await readAnchor(client, "beta");
+      resetAnchorState();
+
+      const result = await client.callTool({
+        name: "edit_file",
+        arguments: {
+          path: "src/file.ts",
+          edits: [{ anchor: betaAnchor, oldText: "beta", newText: "BETA" }],
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: "Path 'src/file.ts' has no anchor state. Call read_file on this file before edit_file.",
+        },
+      ]);
     } finally {
       await client.close();
       await server.close();

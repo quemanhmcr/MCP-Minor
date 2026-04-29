@@ -7,6 +7,7 @@ import { contentHash, getAnchorSnapshot, reconcileAnchors } from "../runtime/anc
 import { isPathInside, type ResolvedWorkspacePath, resolveWorkspacePath } from "./workspace.js";
 
 export const MAX_EDIT_FILE_BYTES = 1 * 1024 * 1024;
+export const MAX_EDIT_FILE_BYTES_LABEL = "1MB";
 
 const UNSUPPORTED_EXTENSIONS = new Set([".pdf", ".docx", ".xlsx", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".ico"]);
 
@@ -96,15 +97,19 @@ export async function editWorkspaceFile(context: RuntimeContext, input: EditFile
     throw new EditFileError(`Path '${resolved.inputPath}' has no anchor state. Call read_file on this file before edit_file.`);
   }
 
+  const fileHashBefore = contentHash(document.text);
+  if (snapshot.contentHash !== fileHashBefore) {
+    throw new EditFileError(`Path '${resolved.inputPath}' changed since the last read_file in this session. Call read_file again before edit_file.`);
+  }
+
   const resolvedEdits = resolveAndValidateEdits(resolved, document.lines, snapshot.anchors, edits);
   const finalLines = applyResolvedEdits(document.lines, resolvedEdits);
   const finalText = serializeDocument(finalLines, document.eol, document.finalNewline);
+  const normalizedFinalText = finalLines.join("\n") + (document.finalNewline && finalLines.length > 0 ? "\n" : "");
+  const fileHashAfter = contentHash(normalizedFinalText);
 
   await fs.writeFile(resolved.absolutePath, finalText, "utf8");
-  reconcileAnchors(context.sessionId, resolved.absolutePath, finalLines);
-
-  const fileHashBefore = contentHash(document.text);
-  const normalizedFinalText = finalLines.join("\n") + (document.finalNewline && finalLines.length > 0 ? "\n" : "");
+  reconcileAnchors(context.sessionId, resolved.absolutePath, finalLines, fileHashAfter);
 
   return {
     path: resolved.absolutePath,
@@ -112,7 +117,7 @@ export async function editWorkspaceFile(context: RuntimeContext, input: EditFile
     changed: true,
     editsApplied: resolvedEdits.length,
     fileHashBefore,
-    fileHashAfter: contentHash(normalizedFinalText),
+    fileHashAfter,
     lineEnding: document.eol === "\r\n" ? "crlf" : "lf",
     appliedEdits: resolvedEdits
       .slice()
@@ -213,7 +218,7 @@ function assertSupportedFile(resolved: ResolvedWorkspacePath): void {
 
 function assertEditableSize(resolved: ResolvedWorkspacePath, stat: Stats): void {
   if (stat.size > MAX_EDIT_FILE_BYTES) {
-    throw new EditFileError(`Path '${resolved.inputPath}' is too large to edit safely.`);
+    throw new EditFileError(`Path '${resolved.inputPath}' exceeds the ${MAX_EDIT_FILE_BYTES_LABEL} edit mutation cap.`);
   }
 }
 
@@ -237,7 +242,7 @@ async function readTextDocument(resolved: ResolvedWorkspacePath, stat: Stats): P
   const lines = splitContentLines(text);
 
   return {
-    text: lines.join("\n") + (finalNewline && lines.length > 0 ? "\n" : ""),
+    text,
     lines,
     finalNewline,
     eol,

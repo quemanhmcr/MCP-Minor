@@ -9,12 +9,14 @@ const MAX_LCS_CELLS = 4_000_000;
 interface TrackedDocument {
   hashes: Uint32Array;
   anchors: string[];
+  contentHash: string;
 }
 
 const storage = new Map<string, Map<string, TrackedDocument>>();
 
 export interface AnchorSnapshot {
   anchors: string[];
+  contentHash: string;
 }
 
 export function getAnchorDelimiter(): string {
@@ -29,7 +31,7 @@ export function formatLineWithAnchor(content: string, anchor: string): string {
   return `${anchor}${ANCHOR_DELIMITER}${content}`;
 }
 
-export function reconcileAnchors(sessionId: string, absolutePath: string, lines: string[]): string[] {
+export function reconcileAnchors(sessionId: string, absolutePath: string, lines: string[], documentHash?: string): string[] {
   if (lines.length > MAX_TRACKED_LINES) {
     return lines.map((_, index) => `L${index + 1}`);
   }
@@ -37,10 +39,14 @@ export function reconcileAnchors(sessionId: string, absolutePath: string, lines:
   const sessionState = getSessionState(sessionId);
   const documentKey = normalizeAbsolutePath(absolutePath);
   const currentHashes = computeLineHashes(lines);
+  const currentContentHash = documentHash ?? contentHash(lines.join("\n"));
   const tracked = sessionState.get(documentKey);
 
   if (tracked && hashesEqual(tracked.hashes, currentHashes)) {
-    refreshDocument(sessionState, documentKey, tracked);
+    refreshDocument(sessionState, documentKey, {
+      ...tracked,
+      contentHash: currentContentHash,
+    });
     return tracked.anchors;
   }
 
@@ -48,6 +54,7 @@ export function reconcileAnchors(sessionId: string, absolutePath: string, lines:
   refreshDocument(sessionState, documentKey, {
     hashes: currentHashes,
     anchors,
+    contentHash: currentContentHash,
   });
 
   return anchors;
@@ -63,6 +70,7 @@ export function getAnchorSnapshot(sessionId: string, absolutePath: string): Anch
 
   return {
     anchors: [...tracked.anchors],
+    contentHash: tracked.contentHash,
   };
 }
 

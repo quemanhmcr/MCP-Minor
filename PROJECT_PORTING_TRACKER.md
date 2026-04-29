@@ -84,11 +84,14 @@ Status: production-ready under current MCP single-file text/code scope.
 - Mutating, workspace-root guarded, single file per call.
 - Accepts `path` and `edits: { anchor, oldText, newText }[]`.
 - Requires existing same-session anchor state from `read_file`.
+- Anchor state is in-memory and session-scoped. It does not survive server restart/reset/session changes; missing anchor state produces a concise instruction to call `read_file` again.
+- Stores the normalized full-file hash from the last `read_file` or successful `edit_file` anchor refresh. Before any write, rejects if the current normalized full-file hash differs, including same-line-count external or cross-session changes.
 - Anchor identifies the start line only. The edit span is exactly the logical line count in `oldText`, starting at that anchor.
 - `oldText` and `newText` normalize CRLF/CR to LF for validation and replacement. `oldText` must exactly match the current file lines at the resolved span; there is no fuzzy match, fallback search, or unanchored replacement.
 - Computes all ranges before writing, rejects overlaps, then applies validated edits bottom-to-top and writes once. Unknown anchors, stale line counts, oldText mismatches, overlap, path errors, symlinks, binary-looking files, unsupported rich/binary extensions, and oversized files fail before any write.
 - Preserves the existing final newline state and writes with the existing dominant line ending (`crlf` for CRLF-dominant files, otherwise `lf`).
-- Refreshes anchor state after a successful write so a subsequent `read_file` returns updated content and anchors.
+- Refreshes anchor state and the stored file hash after a successful write so subsequent same-session reads/edits use updated content.
+- Uses a documented 1MB edit mutation cap, intentionally tighter than `read_file`'s 20MB hard read cap.
 - Returns structured `{ path, relativePath, changed: true, editsApplied, fileHashBefore, fileHashAfter, lineEnding, appliedEdits, diff }`; `diff` is a deterministic patch summary using `*** Update File`, `@@ start,oldCount -> newCount @@`, `-old`, and `+new` lines.
 
 Dirac parity:
@@ -113,7 +116,7 @@ Status meanings:
 | `read_file` | `done` | P0 | Production-ready under MCP text-file scope | Multi-path text reads, line ranges, FNV file hashes, deterministic session-scoped anchors, workspace safety, output caps, and MCP tests. Intentional differences: structured/line-numbered output, deterministic hash anchors, rich file extraction deferred. | Maintain; use anchors as the baseline for later edit design. |
 | `get_file_skeleton` | `not_started` | P1 | Not available | Requires tree-sitter WASM packaging, queries, and likely anchor support. | Start after `read_file`. |
 | `get_function` | `not_started` | P1 | Not available | Requires tree-sitter and anchors via `ASTAnchorBridge`. | Start after skeleton/anchors. |
-| `edit_file` | `done` | P1 | Production-ready under single-file MCP text/code scope | Anchor-first exact replacement ported. Intentional differences: single file, replace-only `{ anchor, oldText, newText }`, deterministic diff summary, no Dirac UI/approval/diagnostics/multi-file flow. | Maintain; consider insert/range extensions only after a separate design session. |
+| `edit_file` | `done` | P1 | Production-ready under single-file MCP text/code scope | Anchor-first exact replacement ported and hardened with full-file hash freshness. Intentional differences: single file, replace-only `{ anchor, oldText, newText }`, deterministic diff summary, no Dirac UI/approval/diagnostics/multi-file flow. | Maintain only. |
 | `find_symbol_references` | `not_started` | P2 | Not available | Requires symbol index and SQLite WASM or a deliberate alternative. | Defer. |
 | `replace_symbol` | `not_started` | P2 | Not available | Requires AST range resolution and mutation flow. | Defer until edit stack exists. |
 | `rename_symbol` | `not_started` | P2 | Not available | Requires symbol index and careful multi-file diff/reporting. | Defer. |
@@ -133,7 +136,7 @@ Status meanings:
 - Path resolution accepts relative paths against `RuntimeContext.cwd`; absolute paths are allowed only when inside configured workspace roots. Sibling-prefix escapes and traversal are rejected.
 - `read_file` additionally rejects symlinks and verifies real paths stay inside the resolved workspace root before reading.
 - Anchor state is in-memory and session-scoped by `RuntimeContext.sessionId`. It is deterministic for reproducibility in tests and MCP sessions, unlike Dirac's randomized dictionary-word anchors.
-- `edit_file` consumes existing `read_file` anchor state without reconciling first. If the tracked line count no longer matches the current file, the edit is considered stale and rejected. If the line count matches, the anchor's tracked start line must still contain exact `oldText`.
+- `edit_file` consumes existing `read_file` anchor state without reconciling first. It first requires the current normalized full-file hash to match the stored same-session snapshot from the last `read_file` or successful `edit_file`. Hash mismatches are stale and rejected before any write, including same-line-count edits. If the hash matches, the anchor's tracked start line must still contain exact `oldText`.
 - `edit_file` uses logical LF text for validation and deterministic diff output, then writes with the file's existing dominant EOL and preserves whether the file ended with a newline.
 - `.diracignore` support is deferred. Current protection is workspace-root containment plus built-in generated/hidden skips per tool.
 - `search_files` depends on system `rg` being available on `PATH`. Do not silently add a bundled binary without documenting packaging and licensing implications.
@@ -142,7 +145,7 @@ Status meanings:
 
 - `.diracignore` is not implemented, so ignore behavior is not full Dirac parity.
 - `read_file` supports text/code files only. PDF, DOCX, XLSX, notebook, and image extraction are intentionally deferred until the standalone server has packaged dependencies and verification fixtures.
-- `edit_file` currently rejects line-count drift as stale instead of trying to reconcile before applying. This is conservative and may reject safe unrelated edits until the caller rereads the file.
+- `edit_file` rejects any file-hash drift as stale instead of trying to reconcile before applying. This is conservative and may reject safe unrelated edits until the caller rereads the file, but it catches same-line-count external and cross-session changes before mutation.
 - `edit_file` supports single-file anchored replacement only. Multi-file batching, insert-specific operations, and end-anchor ranges are intentionally deferred.
 - `read_file` reorder/move preservation is intentionally conservative: ordered unchanged subsequences keep anchors, but lines moved out of order may receive fresh anchors to avoid stale-anchor reuse.
 - `search_files` uses system `rg`; environments without ripgrep get a clear error but cannot search.
@@ -184,9 +187,9 @@ Remove-Item -Recurse -Force mcp-server/dist
    - Verify `web-tree-sitter`, `tree-sitter-wasms`, query files, and package output layout.
    - Do this before `get_file_skeleton` or `get_function`.
 
-2. Decide whether `edit_file` needs insert-specific operations or end-anchor range support.
-   - Keep this separate from tree-sitter/symbol work.
-   - Preserve the current no-partial-write and exact-validation guarantees if extending the schema.
+2. Port `get_file_skeleton` after the tree-sitter asset strategy is verified.
+   - Keep the session scoped to one tree-sitter tool and its shared packaging needs.
+   - Do not expand `edit_file` during the tree-sitter session.
 
 ## Future Sessions Must Avoid
 
@@ -214,6 +217,7 @@ Keep this short. Preserve useful history, but do not turn this tracker into a tr
 | 2026-04-29 | Port and harden `read_file` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP smoke against `dirac/` | Added text/code reads, line ranges, deterministic session anchors, FNV file hashes, workspace/realpath safety, bounded output, domain/MCP coverage, and explicit rich-file deferrals. Smoke: `README.md` 8ms/13900 chars, handler range 3ms/4979 chars, ripgrep range 2ms/1499 chars, friendly errors for `..`, missing file, and directory. |
 | 2026-04-29 | Harden `read_file` anchor reconciliation | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Replaced hash-bucket preservation with ordered LCS-style reconciliation, added duplicate/reorder/session/edit-contract tests, documented deterministic anchor behavior and future `edit_file` assumptions. No new tool ported. |
 | 2026-04-29 | Port single-file anchored `edit_file` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP in-memory smoke | Added `{ path, edits: [{ anchor, oldText, newText }] }`, exact oldText validation, stale/overlap/no-partial-write protection, deterministic diff summary, line-ending preservation, anchor refresh after write, domain/MCP/smoke coverage. No other tool ported. |
+| 2026-04-29 | Harden anchored `edit_file` freshness | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added stored full-file hash snapshots to anchor state, stale hash rejection before writes, restart/reset no-anchor coverage, same-line-count external/cross-session tests, documented 1MB edit mutation cap. No new tool ported. |
 
 ## Session Completion Template
 
