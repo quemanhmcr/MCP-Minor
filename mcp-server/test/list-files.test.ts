@@ -72,6 +72,31 @@ describe("listWorkspaceFiles", () => {
     expect(result.entries.map((entry) => entry.relativePath)).not.toContain("dist/bundle.js");
   });
 
+  it("does not follow directory symlinks during recursive listing", async () => {
+    const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "dirac-mcp-list-files-outside-"));
+
+    try {
+      await fs.writeFile(path.join(outsideRoot, "secret.txt"), "secret");
+
+      try {
+        await fs.symlink(outsideRoot, path.join(workspaceRoot, "src", "outside-link"), "junction");
+      } catch (error) {
+        if (isSymlinkPermissionError(error)) {
+          return;
+        }
+
+        throw error;
+      }
+
+      const result = await listWorkspaceFiles(context, { paths: ["src"], recursive: true });
+
+      expect(result.entries.map((entry) => entry.relativePath)).not.toContain("src/outside-link");
+      expect(result.entries.map((entry) => entry.relativePath)).not.toContain("src/outside-link/secret.txt");
+    } finally {
+      await fs.rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
   it("applies the result limit across all paths", async () => {
     const result = await listWorkspaceFiles(context, { paths: ["src", "docs"], recursive: true, limit: 2 });
 
@@ -115,3 +140,7 @@ describe("listWorkspaceFiles", () => {
     await expect(listWorkspaceFiles(context, { paths: [""] })).rejects.toThrow("non-empty strings");
   });
 });
+
+function isSymlinkPermissionError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && (error.code === "EPERM" || error.code === "EACCES");
+}

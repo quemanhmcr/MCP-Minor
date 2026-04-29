@@ -9,7 +9,12 @@ import { structuredToolResponse, toolErrorResponse } from "./response.js";
 export const listFilesInputSchema = {
   paths: z.array(z.string().min(1)).min(1).describe("Paths to list, relative to the server cwd unless absolute."),
   recursive: z.boolean().optional().default(false).describe("Whether to list files and directories recursively."),
-  limit: z.number().int().positive().max(MAX_LIST_FILES_LIMIT).optional().describe("Maximum number of entries to return."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(`Maximum number of entries to return. Values above ${MAX_LIST_FILES_LIMIT} are clamped.`),
 };
 
 export const listFilesOutputSchema = {

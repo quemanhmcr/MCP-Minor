@@ -111,7 +111,7 @@ async function listResolvedPath(resolved: ResolvedWorkspacePath, recursive: bool
 
 async function statPath(resolved: ResolvedWorkspacePath): Promise<Stats> {
   try {
-    return await fs.stat(resolved.absolutePath);
+    return await fs.lstat(resolved.absolutePath);
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       throw new ListFilesError(`Path '${resolved.inputPath}' does not exist.`);
@@ -134,6 +134,10 @@ async function listDirectory(
     if (state.entries.length >= state.limit) {
       state.truncated = true;
       return;
+    }
+
+    if (entry.isSymbolicLink()) {
+      continue;
     }
 
     if (entry.isDirectory() && IGNORED_DIRECTORY_NAMES.has(entry.name)) {

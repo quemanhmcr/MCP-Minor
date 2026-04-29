@@ -95,4 +95,38 @@ describe("list_files MCP tool", () => {
       await server.close();
     }
   });
+
+  it("clamps oversized limits through MCP", async () => {
+    const server = createMcpServer({
+      cwd: workspaceRoot,
+      sessionId: "test",
+      workspaceRoots: [workspaceRoot],
+    });
+    const client = new Client({
+      name: "test-client",
+      version: "0.0.0",
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: "list_files",
+        arguments: {
+          paths: ["."],
+          limit: 10_000,
+        },
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({
+        limit: 1_000,
+        truncated: false,
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
