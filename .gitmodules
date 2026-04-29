@@ -1,0 +1,3 @@
+[submodule "dirac"]
+	path = dirac
+	url = https://github.com/dirac-run/dirac.git
