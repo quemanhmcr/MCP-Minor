@@ -129,6 +129,7 @@ Editing:
 - MCP anchor state remains in memory by design. It is scoped by `RuntimeContext.sessionId` and does not survive server restart, process reset, or session-id changes.
 - MCP `edit_file` applies all validated non-overlapping ranges bottom-to-top, writes once, then reconciles anchor state from the final file lines. Validation failures produce no write.
 - MCP `edit_file` normalizes requested `oldText`/`newText` and current file content to LF for logical matching and deterministic diff output, while writing back with the file's dominant existing EOL and preserving final newline presence.
+- MCP `edit_file` keeps a 1MB mutation cap. `read_file` exposes compatibility metadata and formatted warnings for larger files because ranged inspection can succeed even when mutation is unavailable.
 - MCP `edit_file` omits Dirac's approval UI, VS Code diff provider, dirty document save, diagnostics, auto-format/user-edit feedback, telemetry, multi-file batching, and insert-specific operations.
 
 Ignore rules:
@@ -169,6 +170,7 @@ Ripgrep:
   - Uses existing workspace guards plus realpath containment; rejects symlinks and directories.
   - Returns structured per-line output and line-numbered formatted text.
   - Uses deterministic session-scoped `Axxxxxxxx` anchors and FNV-1a content hashes.
+  - Reports `editFileCompatibility` so agents can tell when a ranged read succeeded for a file that exceeds the narrower MCP `edit_file` mutation cap.
   - Defers rich file extraction with explicit unsupported-file errors.
 
 `edit_file`:

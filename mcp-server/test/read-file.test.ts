@@ -2,7 +2,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { readWorkspaceFiles } from "../src/filesystem/read-file.js";
+import { formatReadFileResult, readWorkspaceFiles } from "../src/filesystem/read-file.js";
+import { MAX_EDIT_FILE_BYTES } from "../src/filesystem/edit-file-limits.js";
 import type { RuntimeContext } from "../src/runtime/context.js";
 import { resetAnchorState } from "../src/runtime/anchor-state.js";
 
@@ -37,6 +38,10 @@ describe("readWorkspaceFiles", () => {
     expect(result.files[0]).toMatchObject({
       path: path.join(workspaceRoot, "src", "main.ts"),
       relativePath: "src/main.ts",
+      editFileCompatibility: {
+        editable: true,
+        maxBytes: MAX_EDIT_FILE_BYTES,
+      },
       totalLines: 4,
       startLine: 1,
       endLine: 4,
@@ -144,6 +149,40 @@ describe("readWorkspaceFiles", () => {
 
     const result = await readWorkspaceFiles(context, { paths: ["large.txt"], startLine: 2, endLine: 2 });
     expect(result.files[0].lines[0].text).toBe("last");
+  });
+
+  it("marks ranged reads over the edit mutation cap as not editable by edit_file", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "too-large-to-edit.ts"), `first\n${"x".repeat(MAX_EDIT_FILE_BYTES)}\n`);
+
+    const result = await readWorkspaceFiles(context, {
+      paths: ["too-large-to-edit.ts"],
+      startLine: 1,
+      endLine: 1,
+    });
+
+    expect(result.files[0].editFileCompatibility).toEqual({
+      editable: false,
+      maxBytes: MAX_EDIT_FILE_BYTES,
+      reason:
+        "This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.",
+    });
+    expect(result.files[0].content).toMatch(/^1: A[0-9a-f]{8}\u00a7first$/u);
+    expect(result.files[0].truncated).toBe(false);
+  });
+
+  it("includes edit_file compatibility warnings in formatted read output", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "too-large-to-edit.ts"), `first\n${"x".repeat(MAX_EDIT_FILE_BYTES)}\n`);
+
+    const result = await readWorkspaceFiles(context, {
+      paths: ["too-large-to-edit.ts"],
+      startLine: 1,
+      endLine: 1,
+    });
+
+    expect(result.files[0].content).not.toContain("Edit File Warning");
+    expect(formatReadFileResult(result)).toContain(
+      "[Edit File Warning: This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.]",
+    );
   });
 
   it("caps large ranged output by line limit", async () => {

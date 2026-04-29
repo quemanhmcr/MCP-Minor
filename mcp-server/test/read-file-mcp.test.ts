@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { MAX_EDIT_FILE_BYTES } from "../src/filesystem/edit-file-limits.js";
 import { createMcpServer } from "../src/server.js";
 
 describe("read_file MCP tool", () => {
@@ -48,6 +49,10 @@ describe("read_file MCP tool", () => {
           {
             path: path.join(workspaceRoot, "src", "file.ts"),
             relativePath: "src/file.ts",
+            editFileCompatibility: {
+              editable: true,
+              maxBytes: MAX_EDIT_FILE_BYTES,
+            },
             totalLines: 3,
             startLine: 2,
             endLine: 2,
@@ -91,6 +96,44 @@ describe("read_file MCP tool", () => {
         },
       ]);
       expect(result.structuredContent).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns edit_file compatibility metadata and text warning for files over the edit cap", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "large.ts"), `first\n${"x".repeat(MAX_EDIT_FILE_BYTES)}\n`);
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const result = await client.callTool({
+        name: "read_file",
+        arguments: {
+          paths: ["src/large.ts"],
+          startLine: 1,
+          endLine: 1,
+        },
+      });
+
+      expect(result.isError).toBeUndefined();
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toContain(
+        "[Edit File Warning: This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.]",
+      );
+      expect(result.structuredContent).toMatchObject({
+        files: [
+          {
+            relativePath: "src/large.ts",
+            editFileCompatibility: {
+              editable: false,
+              maxBytes: MAX_EDIT_FILE_BYTES,
+              reason:
+                "This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.",
+            },
+          },
+        ],
+      });
     } finally {
       await client.close();
       await server.close();

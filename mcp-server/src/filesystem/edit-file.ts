@@ -4,10 +4,8 @@ import { StringDecoder } from "node:string_decoder";
 
 import type { RuntimeContext } from "../runtime/context.js";
 import { contentHash, getAnchorSnapshot, reconcileAnchors } from "../runtime/anchor-state.js";
+import { MAX_EDIT_FILE_BYTES, MAX_EDIT_FILE_BYTES_LABEL } from "./edit-file-limits.js";
 import { isPathInside, type ResolvedWorkspacePath, resolveWorkspacePath } from "./workspace.js";
-
-export const MAX_EDIT_FILE_BYTES = 1 * 1024 * 1024;
-export const MAX_EDIT_FILE_BYTES_LABEL = "1MB";
 
 const UNSUPPORTED_EXTENSIONS = new Set([".pdf", ".docx", ".xlsx", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".ico"]);
 
@@ -218,7 +216,9 @@ function assertSupportedFile(resolved: ResolvedWorkspacePath): void {
 
 function assertEditableSize(resolved: ResolvedWorkspacePath, stat: Stats): void {
   if (stat.size > MAX_EDIT_FILE_BYTES) {
-    throw new EditFileError(`Path '${resolved.inputPath}' exceeds the ${MAX_EDIT_FILE_BYTES_LABEL} edit mutation cap.`);
+    throw new EditFileError(
+      `Path '${resolved.inputPath}' exceeds the ${MAX_EDIT_FILE_BYTES_LABEL} edit mutation cap. read_file can inspect larger files with line ranges, but edit_file currently mutates only files up to ${MAX_EDIT_FILE_BYTES_LABEL}. Use another editing path for this large file or avoid editing generated/bundled artifacts with edit_file.`,
+    );
   }
 }
 

@@ -31,12 +31,19 @@ const readFileLineSchema = z.object({
   formatted: z.string(),
 });
 
+const editFileCompatibilitySchema = z.object({
+  editable: z.boolean(),
+  maxBytes: z.number().int().positive(),
+  reason: z.string().optional(),
+});
+
 export const readFileOutputSchema = {
   files: z.array(
     z.object({
       path: z.string(),
       relativePath: z.string(),
       fileHash: z.string(),
+      editFileCompatibility: editFileCompatibilitySchema,
       totalLines: z.number().int().nonnegative(),
       startLine: z.number().int().positive(),
       endLine: z.number().int().nonnegative(),

@@ -9,6 +9,7 @@ import {
   getAnchorDelimiter,
   reconcileAnchors,
 } from "../runtime/anchor-state.js";
+import { MAX_EDIT_FILE_BYTES, MAX_EDIT_FILE_BYTES_LABEL } from "./edit-file-limits.js";
 import { isPathInside, type ResolvedWorkspacePath, resolveWorkspacePath } from "./workspace.js";
 
 export const MAX_FULL_FILE_READ_BYTES = 50 * 1024;
@@ -46,6 +47,7 @@ export interface ReadFileEntry {
   path: string;
   relativePath: string;
   fileHash: string;
+  editFileCompatibility: EditFileCompatibility;
   totalLines: number;
   startLine: number;
   endLine: number;
@@ -53,6 +55,12 @@ export interface ReadFileEntry {
   content: string;
   truncated: boolean;
   anchorDelimiter: string;
+}
+
+export interface EditFileCompatibility {
+  editable: boolean;
+  maxBytes: number;
+  reason?: string;
 }
 
 export interface ReadFileResult {
@@ -101,7 +109,9 @@ export function formatReadFileResult(result: ReadFileResult): string {
   return result.files
     .map((file) => {
       const header = result.files.length > 1 ? `--- ${file.relativePath} ---\n` : "";
-      return `${header}[File Hash: ${file.fileHash}]\n${file.content}`;
+      const editFileWarning =
+        file.editFileCompatibility.reason === undefined ? "" : `\n[Edit File Warning: ${file.editFileCompatibility.reason}]`;
+      return `${header}[File Hash: ${file.fileHash}]${editFileWarning}\n${file.content}`;
     })
     .join("\n\n");
 }
@@ -183,6 +193,7 @@ async function readOneFile(
   const text = await readTextFile(resolved, stat);
   const allLines = splitLines(text);
   const fileHash = contentHash(text);
+  const editFileCompatibility = getEditFileCompatibility(stat);
   const allAnchors = reconcileAnchors(context.sessionId, resolved.absolutePath, allLines, fileHash);
   const startLine = range.startLine ?? 1;
   const requestedEndLine = range.endLine ?? allLines.length;
@@ -209,6 +220,7 @@ async function readOneFile(
     path: resolved.absolutePath,
     relativePath: resolved.relativePath,
     fileHash,
+    editFileCompatibility,
     totalLines: allLines.length,
     startLine,
     endLine: lines.length === 0 ? Math.min(requestedEndLine, allLines.length) : lines[lines.length - 1].line,
@@ -216,6 +228,21 @@ async function readOneFile(
     content,
     truncated: cappedByLineLimit || outputCap.truncated,
     anchorDelimiter: getAnchorDelimiter(),
+  };
+}
+
+function getEditFileCompatibility(stat: Stats): EditFileCompatibility {
+  if (stat.size <= MAX_EDIT_FILE_BYTES) {
+    return {
+      editable: true,
+      maxBytes: MAX_EDIT_FILE_BYTES,
+    };
+  }
+
+  return {
+    editable: false,
+    maxBytes: MAX_EDIT_FILE_BYTES,
+    reason: `This file exceeds the ${MAX_EDIT_FILE_BYTES_LABEL} edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.`,
   };
 }
 
