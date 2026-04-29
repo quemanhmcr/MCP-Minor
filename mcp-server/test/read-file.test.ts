@@ -171,6 +171,39 @@ describe("readWorkspaceFiles", () => {
     expect(second.files[0].lines.map((line) => line.anchor)).toEqual(first.files[0].lines.map((line) => line.anchor));
   });
 
+  it("preserves surrounding anchors when a line is inserted", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "one\ntwo\nthree\n");
+    const first = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "one\ninserted\ntwo\nthree\n");
+    const second = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+
+    const firstAnchors = anchorsByText(first.files[0].lines);
+    const secondAnchors = anchorsByText(second.files[0].lines);
+
+    expect(secondAnchors.get("one")).toBe(firstAnchors.get("one"));
+    expect(secondAnchors.get("two")).toBe(firstAnchors.get("two"));
+    expect(secondAnchors.get("three")).toBe(firstAnchors.get("three"));
+    expect(secondAnchors.get("inserted")).not.toBe(firstAnchors.get("two"));
+    expect(new Set(second.files[0].lines.map((line) => line.anchor)).size).toBe(second.files[0].lines.length);
+  });
+
+  it("preserves remaining anchors when a line is deleted", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "one\ntwo\nthree\nfour\n");
+    const first = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "one\nthree\nfour\n");
+    const second = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+
+    const firstAnchors = anchorsByText(first.files[0].lines);
+    const secondAnchors = anchorsByText(second.files[0].lines);
+
+    expect(secondAnchors.get("one")).toBe(firstAnchors.get("one"));
+    expect(secondAnchors.get("three")).toBe(firstAnchors.get("three"));
+    expect(secondAnchors.get("four")).toBe(firstAnchors.get("four"));
+    expect(second.files[0].lines.some((line) => line.anchor === firstAnchors.get("two"))).toBe(false);
+  });
+
   it("changes anchors for changed lines while preserving unchanged lines", async () => {
     const first = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
     await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "one\nchanged\nthree\nfour\n");
@@ -181,7 +214,81 @@ describe("readWorkspaceFiles", () => {
     expect(second.files[0].lines[1].anchor).not.toBe(first.files[0].lines[1].anchor);
     expect(second.files[0].lines[2].anchor).toBe(first.files[0].lines[2].anchor);
   });
+
+  it("keeps duplicate identical lines as separate anchors", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "same\nsame\nsame\n");
+    const first = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+    const second = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+
+    const firstAnchors = first.files[0].lines.map((line) => line.anchor);
+    const secondAnchors = second.files[0].lines.map((line) => line.anchor);
+
+    expect(new Set(firstAnchors).size).toBe(3);
+    expect(secondAnchors).toEqual(firstAnchors);
+  });
+
+  it("preserves the best ordered duplicate anchors across insertion and deletion", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "header\nsame\nmiddle\nsame\nfooter\n");
+    const first = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+    const originalAnchors = first.files[0].lines.map((line) => line.anchor);
+
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "header\nsame\ninserted\nsame\nfooter\n");
+    const second = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+    const nextAnchors = second.files[0].lines.map((line) => line.anchor);
+
+    expect(nextAnchors[0]).toBe(originalAnchors[0]);
+    expect(nextAnchors[1]).toBe(originalAnchors[1]);
+    expect(nextAnchors[2]).not.toBe(originalAnchors[2]);
+    expect(nextAnchors[3]).toBe(originalAnchors[3]);
+    expect(nextAnchors[4]).toBe(originalAnchors[4]);
+    expect(new Set(nextAnchors).size).toBe(nextAnchors.length);
+  });
+
+  it("does not preserve both anchors for a pure reorder", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "alpha\nbeta\n");
+    const first = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+
+    await fs.writeFile(path.join(workspaceRoot, "src", "main.ts"), "beta\nalpha\n");
+    const second = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+
+    const originalAnchors = new Set(first.files[0].lines.map((line) => line.anchor));
+    const preservedCount = second.files[0].lines.filter((line) => originalAnchors.has(line.anchor)).length;
+
+    expect(preservedCount).toBe(1);
+    expect(new Set(second.files[0].lines.map((line) => line.anchor)).size).toBe(2);
+  });
+
+  it("scopes mutable anchor state by session", async () => {
+    const first = await readWorkspaceFiles(context, { paths: ["src/main.ts"] });
+    const otherSession = await readWorkspaceFiles(
+      {
+        ...context,
+        sessionId: "other-session",
+      },
+      { paths: ["src/main.ts"] },
+    );
+
+    expect(otherSession.files[0].lines.map((line) => line.anchor)).not.toEqual(
+      first.files[0].lines.map((line) => line.anchor),
+    );
+  });
+
+  it("returns a unique anchor and exact text pair for every output line", async () => {
+    const result = await readWorkspaceFiles(context, { paths: ["src/main.ts"], startLine: 2, endLine: 4 });
+    const lines = result.files[0].lines;
+
+    expect(result.files[0].anchorDelimiter).toBe("\u00a7");
+    expect(new Set(lines.map((line) => line.anchor)).size).toBe(lines.length);
+    for (const line of lines) {
+      expect(line.anchor).toMatch(/^A[0-9a-f]{8}$/u);
+      expect(line.formatted).toBe(`${line.line}: ${line.anchor}\u00a7${line.text}`);
+    }
+  });
 });
+
+function anchorsByText(lines: Array<{ text: string; anchor: string }>): Map<string, string> {
+  return new Map(lines.map((line) => [line.text, line.anchor]));
+}
 
 function isSymlinkPermissionError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && (error.code === "EPERM" || error.code === "EACCES");

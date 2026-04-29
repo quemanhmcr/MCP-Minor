@@ -65,7 +65,8 @@ Status: production-ready under current standalone MCP text-file scope.
 - Read-only, idempotent, workspace-root guarded.
 - Accepts `paths`, optional `startLine`/`endLine`, Dirac-compatible `start_line`/`end_line`, and optional `lineLimit`.
 - Returns structured `{ files, lineLimit, truncated }`, where each file includes absolute `path`, slash-stable `relativePath`, `fileHash`, `totalLines`, `startLine`, `endLine`, per-line `{ line, anchor, text, formatted }`, line-numbered `content`, `anchorDelimiter`, and `truncated`.
-- Generates deterministic session-scoped anchors using `RuntimeContext.sessionId`, normalized absolute path, line hashes, and in-memory reconciliation. Repeated same-content reads in the same session keep anchors; changed lines get new anchors; unchanged lines are preserved when possible.
+- Generates deterministic session-scoped anchors using `RuntimeContext.sessionId`, normalized absolute path, line hashes, and in-memory reconciliation. Repeated same-content reads in the same session keep anchors. Reconciliation uses an ordered LCS-style match over FNV-1a line hashes, with prefix/suffix fast paths and a bounded greedy fallback for very large middles; matched unchanged lines keep anchors, while inserted, edited, deleted/reappearing, or unmatched moved lines get new anchors.
+- Keeps duplicate identical lines as distinct anchors. Duplicate lines are preserved by ordered matching, so insertion/deletion around duplicates keeps the best matching existing anchors without assigning one anchor to two current lines.
 - Uses Dirac's FNV-1a content hash shape for `[File Hash: ...]`.
 - Rejects full-file reads over 50KB unless a line range is supplied, with a hard 20MB read cap and bounded line/output caps.
 - Rejects missing paths, out-of-workspace paths, directories, symlinks, symlink escapes, binary-looking files, invalid UTF-8, and unsupported rich/binary extensions with concise MCP errors.
@@ -73,7 +74,7 @@ Status: production-ready under current standalone MCP text-file scope.
 Dirac parity:
 
 - Parity accurate for multi-path schema, one-based inclusive line ranges, full-read 50KB safety behavior, FNV-1a file hashes, hash-anchored lines, and session-scoped anchor lifecycle intent.
-- Intentionally different from Dirac: output is structured MCP JSON plus line-numbered text; anchor IDs are deterministic `Axxxxxxxx` hashes instead of random dictionary words; no repeated-read "no changes have been made" elision from conversation history; no approval UI, telemetry, file context tracker, `.diracignore`, image blocks, or PDF/DOCX/IPYNB/XLSX extraction.
+- Intentionally different from Dirac: output is structured MCP JSON plus line-numbered text; anchor IDs are deterministic `Axxxxxxxx` hashes instead of random dictionary words; pure reorder/move handling is conservative and only preserves the ordered unchanged subsequence; no repeated-read "no changes have been made" elision from conversation history; no approval UI, telemetry, file context tracker, `.diracignore`, image blocks, or PDF/DOCX/IPYNB/XLSX extraction.
 
 ## Tool Status Table
 
@@ -119,7 +120,8 @@ Status meanings:
 
 - `.diracignore` is not implemented, so ignore behavior is not full Dirac parity.
 - `read_file` supports text/code files only. PDF, DOCX, XLSX, notebook, and image extraction are intentionally deferred until the standalone server has packaged dependencies and verification fixtures.
-- `read_file` anchors are suitable for later edit validation within the same server process/session, but no edit tool consumes them yet.
+- `read_file` anchors are suitable for later edit validation within the same server process/session, but no edit tool consumes them yet. Future `edit_file` should treat anchors as session/file scoped, require exact line-text validation for `anchor` and `end_anchor`, reject stale/missing anchors, and update anchor state after successful writes.
+- `read_file` reorder/move preservation is intentionally conservative: ordered unchanged subsequences keep anchors, but lines moved out of order may receive fresh anchors to avoid stale-anchor reuse.
 - `search_files` uses system `rg`; environments without ripgrep get a clear error but cannot search.
 - `search_files` structured output lacks Dirac's formatted hash-anchored lines.
 - `list_files` intentionally differs from Dirac by not returning line counts or mtimes.
@@ -187,6 +189,7 @@ Keep this short. Preserve useful history, but do not turn this tracker into a tr
 | 2026-04-29 | Real-repo smoke and parity audit for `list_files` / `search_files` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP smoke against `dirac/` | Re-read upstream handlers/core services, confirmed no runtime fixes needed, added parity/edge regression coverage, and fixed submodule-style `.git` listing leak. |
 | 2026-04-29 | Consolidate documentation for handoff clarity | `done` | Docs-only git/submodule/dist checks | Reorganized tracker as the operational source of truth and upstream notes as reference material. No code changed and no new Dirac tool ported. |
 | 2026-04-29 | Port and harden `read_file` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP smoke against `dirac/` | Added text/code reads, line ranges, deterministic session anchors, FNV file hashes, workspace/realpath safety, bounded output, domain/MCP coverage, and explicit rich-file deferrals. Smoke: `README.md` 8ms/13900 chars, handler range 3ms/4979 chars, ripgrep range 2ms/1499 chars, friendly errors for `..`, missing file, and directory. |
+| 2026-04-29 | Harden `read_file` anchor reconciliation | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Replaced hash-bucket preservation with ordered LCS-style reconciliation, added duplicate/reorder/session/edit-contract tests, documented deterministic anchor behavior and future `edit_file` assumptions. No new tool ported. |
 
 ## Session Completion Template
 

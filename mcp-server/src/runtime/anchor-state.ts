@@ -4,6 +4,7 @@ const ANCHOR_DELIMITER = "\u00a7";
 const MAX_TRACKED_LINES = 50_000;
 const MAX_TRACKED_FILES = 1_024;
 const MAX_TRACKED_SESSIONS = 50;
+const MAX_LCS_CELLS = 4_000_000;
 
 interface TrackedDocument {
   hashes: Uint32Array;
@@ -63,44 +64,179 @@ function assignAnchors(
   currentHashes: Uint32Array,
   tracked: TrackedDocument | undefined,
 ): string[] {
-  const previousByHash = new Map<number, string[]>();
-
-  if (tracked) {
-    for (let index = 0; index < tracked.hashes.length; index++) {
-      const hash = tracked.hashes[index];
-      const existing = previousByHash.get(hash);
-      if (existing) {
-        existing.push(tracked.anchors[index]);
-      } else {
-        previousByHash.set(hash, [tracked.anchors[index]]);
-      }
-    }
-  }
-
+  const matchedCurrentToPrevious = tracked ? matchUnchangedLines(tracked.hashes, currentHashes) : new Map<number, number>();
+  const historicalAnchors = tracked ? new Set(tracked.anchors) : new Set<string>();
   const used = new Set<string>();
   const occurrenceByHash = new Map<number, number>();
 
-  return Array.from(currentHashes, (lineHash) => {
-    const previous = previousByHash.get(lineHash);
-    const preserved = previous?.shift();
-    if (preserved && !used.has(preserved)) {
+  return Array.from(currentHashes, (lineHash, currentIndex) => {
+    const occurrence = occurrenceByHash.get(lineHash) ?? 0;
+    occurrenceByHash.set(lineHash, occurrence + 1);
+
+    const previousIndex = matchedCurrentToPrevious.get(currentIndex);
+    const preserved = previousIndex === undefined ? undefined : tracked?.anchors[previousIndex];
+    if (preserved !== undefined && !used.has(preserved)) {
       used.add(preserved);
       return preserved;
     }
 
-    const occurrence = occurrenceByHash.get(lineHash) ?? 0;
-    occurrenceByHash.set(lineHash, occurrence + 1);
-
     let salt = 0;
     while (true) {
       const anchor = createAnchor(sessionId, documentKey, lineHash, occurrence, salt);
-      if (!used.has(anchor)) {
+      if (!used.has(anchor) && !historicalAnchors.has(anchor)) {
         used.add(anchor);
         return anchor;
       }
       salt++;
     }
   });
+}
+
+function matchUnchangedLines(previousHashes: Uint32Array, currentHashes: Uint32Array): Map<number, number> {
+  const matches = new Map<number, number>();
+  let previousStart = 0;
+  let currentStart = 0;
+  let previousEnd = previousHashes.length - 1;
+  let currentEnd = currentHashes.length - 1;
+
+  while (
+    previousStart <= previousEnd &&
+    currentStart <= currentEnd &&
+    previousHashes[previousStart] === currentHashes[currentStart]
+  ) {
+    matches.set(currentStart, previousStart);
+    previousStart++;
+    currentStart++;
+  }
+
+  const suffixMatches: Array<[number, number]> = [];
+  while (
+    previousStart <= previousEnd &&
+    currentStart <= currentEnd &&
+    previousHashes[previousEnd] === currentHashes[currentEnd]
+  ) {
+    suffixMatches.push([currentEnd, previousEnd]);
+    previousEnd--;
+    currentEnd--;
+  }
+
+  const previousLength = Math.max(0, previousEnd - previousStart + 1);
+  const currentLength = Math.max(0, currentEnd - currentStart + 1);
+
+  if (previousLength > 0 && currentLength > 0) {
+    const middleMatches =
+      previousLength * currentLength <= MAX_LCS_CELLS
+        ? matchMiddleWithLcs(previousHashes, currentHashes, previousStart, currentStart, previousLength, currentLength)
+        : matchMiddleGreedily(previousHashes, currentHashes, previousStart, currentStart, previousLength, currentLength);
+
+    for (const [currentIndex, previousIndex] of middleMatches) {
+      matches.set(currentIndex, previousIndex);
+    }
+  }
+
+  for (let index = suffixMatches.length - 1; index >= 0; index--) {
+    const [currentIndex, previousIndex] = suffixMatches[index];
+    matches.set(currentIndex, previousIndex);
+  }
+
+  return matches;
+}
+
+function matchMiddleWithLcs(
+  previousHashes: Uint32Array,
+  currentHashes: Uint32Array,
+  previousStart: number,
+  currentStart: number,
+  previousLength: number,
+  currentLength: number,
+): Array<[number, number]> {
+  const width = currentLength + 1;
+  const directions = new Uint8Array((previousLength + 1) * width);
+  let previousRow = new Uint32Array(width);
+  let currentRow = new Uint32Array(width);
+
+  for (let oldOffset = 1; oldOffset <= previousLength; oldOffset++) {
+    const previousHash = previousHashes[previousStart + oldOffset - 1];
+    for (let currentOffset = 1; currentOffset <= currentLength; currentOffset++) {
+      const cell = oldOffset * width + currentOffset;
+      if (previousHash === currentHashes[currentStart + currentOffset - 1]) {
+        currentRow[currentOffset] = previousRow[currentOffset - 1] + 1;
+        directions[cell] = 1;
+      } else if (previousRow[currentOffset] >= currentRow[currentOffset - 1]) {
+        currentRow[currentOffset] = previousRow[currentOffset];
+        directions[cell] = 2;
+      } else {
+        currentRow[currentOffset] = currentRow[currentOffset - 1];
+        directions[cell] = 3;
+      }
+    }
+
+    [previousRow, currentRow] = [currentRow, previousRow];
+    currentRow.fill(0);
+  }
+
+  const matches: Array<[number, number]> = [];
+  let oldOffset = previousLength;
+  let currentOffset = currentLength;
+
+  while (oldOffset > 0 && currentOffset > 0) {
+    const direction = directions[oldOffset * width + currentOffset];
+    if (direction === 1) {
+      matches.push([currentStart + currentOffset - 1, previousStart + oldOffset - 1]);
+      oldOffset--;
+      currentOffset--;
+    } else if (direction === 2) {
+      oldOffset--;
+    } else {
+      currentOffset--;
+    }
+  }
+
+  matches.reverse();
+  return matches;
+}
+
+function matchMiddleGreedily(
+  previousHashes: Uint32Array,
+  currentHashes: Uint32Array,
+  previousStart: number,
+  currentStart: number,
+  previousLength: number,
+  currentLength: number,
+): Array<[number, number]> {
+  const previousIndexesByHash = new Map<number, number[]>();
+  const previousEnd = previousStart + previousLength;
+  for (let previousIndex = previousStart; previousIndex < previousEnd; previousIndex++) {
+    const lineIndexes = previousIndexesByHash.get(previousHashes[previousIndex]);
+    if (lineIndexes) {
+      lineIndexes.push(previousIndex);
+    } else {
+      previousIndexesByHash.set(previousHashes[previousIndex], [previousIndex]);
+    }
+  }
+
+  const matches: Array<[number, number]> = [];
+  let minimumPreviousIndex = previousStart;
+  const currentEnd = currentStart + currentLength;
+
+  for (let currentIndex = currentStart; currentIndex < currentEnd; currentIndex++) {
+    const candidates = previousIndexesByHash.get(currentHashes[currentIndex]);
+    if (!candidates) {
+      continue;
+    }
+
+    while (candidates.length > 0 && candidates[0] < minimumPreviousIndex) {
+      candidates.shift();
+    }
+
+    const previousIndex = candidates.shift();
+    if (previousIndex !== undefined) {
+      matches.push([currentIndex, previousIndex]);
+      minimumPreviousIndex = previousIndex + 1;
+    }
+  }
+
+  return matches;
 }
 
 function createAnchor(sessionId: string, documentKey: string, lineHash: number, occurrence: number, salt: number): string {
