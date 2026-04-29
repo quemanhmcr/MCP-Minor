@@ -96,13 +96,14 @@ Workspace/path support:
 Hash anchors:
 
 - Required for `read_file`, `search_files` anchored formatted output, `edit_file`, and AST outputs.
-- Upstream `AnchorStateManager` stores anchors by task id. MCP needs a stable session/task-id policy.
+- Upstream `AnchorStateManager` stores anchors by task id and assigns randomized dictionary-word anchors while preserving unchanged lines through reconciliation.
+- The MCP `read_file` port uses deterministic `Axxxxxxxx` anchors scoped by `RuntimeContext.sessionId`. It preserves anchors for unchanged lines where possible and changes anchors for changed lines. This is intentionally different from Dirac's random dictionary words to make standalone MCP tests and sessions reproducible.
 
 File extraction:
 
 - Upstream supports text plus richer file types through `extract-file-content`.
 - Relevant package dependencies include `isbinaryfile`, `pdf-parse`, `mammoth`, and `image-size`.
-- A practical MCP port can start text-only if the richer extraction path is too large for one session, but this must be documented as partial parity.
+- The current MCP `read_file` port is text/code only. PDF, DOCX, XLSX, notebook, and image extraction are explicitly deferred with clear unsupported-file errors rather than partial extraction.
 
 Tree-sitter:
 
@@ -147,30 +148,26 @@ Ripgrep:
 - Dirac-parity caveats documented in the tracker: hidden path exclusion, byte columns, and first submatch only for same-line multiple matches.
 - Intentional differences from Dirac: structured JSON output, no hash-anchored formatted text, no `DiracIgnoreController`, and system `rg`.
 
-## Next Likely Tool: `read_file`
+`read_file`:
 
-Recommended next implementation session:
+- MCP production-ready under the current standalone text/code file scope.
+- Upstream behavior inspected:
+  - Schema accepts `paths`, optional `start_line`, and optional `end_line`.
+  - `ReadFileToolHandler` supports multiple paths, one-based inclusive ranges, a 50KB full-read guard, `[File Hash: ...]`, and hash-anchored lines.
+  - Upstream extraction supports text plus PDF, DOCX, IPYNB, XLSX, and model-gated images through extension dependencies.
+  - Upstream anchors use `AnchorStateManager`, line FNV hashes, task id scoping, and the `§` delimiter.
+- MCP behavior:
+  - Accepts `paths`, camelCase `startLine`/`endLine`, Dirac-compatible `start_line`/`end_line`, and optional `lineLimit`.
+  - Uses existing workspace guards plus realpath containment; rejects symlinks and directories.
+  - Returns structured per-line output and line-numbered formatted text.
+  - Uses deterministic session-scoped `Axxxxxxxx` anchors and FNV-1a content hashes.
+  - Defers rich file extraction with explicit unsupported-file errors.
 
-1. Read upstream schema and handler:
-   - `src/core/prompts/system-prompt/tools/read_file.ts`
-   - `src/core/task/tools/handlers/ReadFileToolHandler.ts`
-2. Inspect extraction and anchor utilities:
-   - `src/integrations/misc/extract-file-content.ts`
-   - `src/utils/AnchorStateManager.ts`
-   - `src/utils/line-hashing.ts`
-   - `src/shared/utils/line-hashing.ts`
-3. Decide first-session scope:
-   - Text files only, or full upstream extraction parity.
-   - Single path versus multiple paths, matching upstream schema.
-   - Line range behavior and output shape.
-4. Add tests for:
-   - Workspace-root rejection.
-   - Missing file errors.
-   - Text read with line ranges.
-   - Anchor creation/reconciliation if included.
-   - MCP in-memory call coverage.
+## Next Likely Tool Area
 
-Do not start editing tools until `read_file` and anchor behavior are stable.
+`read_file` and anchor behavior are now stable enough to use as source material for future edit design. The next likely preparatory work is tree-sitter asset packaging for `get_file_skeleton` / `get_function`, or a focused design pass for headless `edit_file` consumption of current MCP anchors.
+
+Do not start editing tools until direct-write, diff output, stale-anchor, and dirty-file behavior are specified.
 
 ## Risks For Anchors, Tree-Sitter, And Editing
 
