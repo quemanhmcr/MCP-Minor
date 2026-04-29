@@ -89,6 +89,7 @@ For a ported Dirac tool:
 - `list_files` is registered through `McpServer.registerTool` with zod input/output schemas, read-only/idempotent annotations, and structured MCP output.
 - `list_files` returns deterministic entries shaped as `{ path, type, relativePath }`, sorted by name within each listed directory. It skips generated/heavy directories: `node_modules`, `dist`, `coverage`, and `.git`.
 - `list_files` validates direct calls defensively in addition to MCP zod validation: invalid limits fail fast, oversized limits clamp to `MAX_LIST_FILES_LIMIT`, duplicate/overlapping resolved entries are deduplicated, and missing paths fail fast with a concise tool error.
+- MCP tool registration now flows through `mcp-server/src/tools/register.ts`, and shared response/error formatting lives in `mcp-server/src/tools/response.ts` so future tools can return consistent text JSON, `structuredContent`, and concise `isError` responses without stack traces.
 
 ## Verification Commands
 
@@ -165,6 +166,7 @@ Add one row per session. Keep it short so future sessions can resume quickly.
 | 2026-04-29 | Normalize git/project hygiene | `done` | `.gitignore`, `.gitmodules`, `README.md`, `PROJECT_PORTING_TRACKER.md` | `git status --short`; `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Initialized root git repo, recorded `dirac/` as submodule pinned to `e827ec30d4cdae078588df2040f203b780d657ad`, kept generated artifacts ignored. No Dirac tool was ported. |
 | 2026-04-29 | Port `list_files` and filesystem guard foundation | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/*`, `mcp-server/src/tools/list-files.ts`, `mcp-server/src/server.ts`, `mcp-server/test/*` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added reusable workspace path guard, deterministic read-only listing, generated-directory ignores, zod schemas, and MCP in-memory smoke test. |
 | 2026-04-29 | Harden `list_files` for commit readiness | `done` | `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/list-files.ts`, `mcp-server/test/list-files.test.ts`, `mcp-server/test/list-files-mcp.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added direct input validation, invalid-limit handling, duplicate result dedupe, missing-path fail-fast errors, and MCP out-of-workspace error coverage. No new Dirac tool was ported. |
+| 2026-04-29 | Standardize MCP tool registration and responses | `done` | `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/server.ts`, `mcp-server/src/tools/list-files.ts`, `mcp-server/src/tools/register.ts`, `mcp-server/src/tools/response.ts`, `mcp-server/test/tool-response.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Moved tool registration behind `registerTools`, added shared structured success and concise tool error response helpers, and refactored `list_files` to use them. No new Dirac tool was ported. |
 
 ## Session Completion Template
 

@@ -1,8 +1,10 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { MAX_LIST_FILES_LIMIT, listWorkspaceFiles } from "../filesystem/list-files.js";
 import { normalizeWorkspaceError } from "../filesystem/workspace.js";
 import type { RuntimeContext } from "../runtime/context.js";
+import { structuredToolResponse, toolErrorResponse } from "./response.js";
 
 export const listFilesInputSchema = {
   paths: z.array(z.string().min(1)).min(1).describe("Paths to list, relative to the server cwd unless absolute."),
@@ -22,6 +24,26 @@ export const listFilesOutputSchema = {
   truncated: z.boolean(),
 };
 
+export function registerListFilesTool(server: McpServer, context: RuntimeContext): void {
+  server.registerTool(
+    "list_files",
+    {
+      title: "List files",
+      description:
+        "List files and directories within one or more workspace paths. Paths are resolved relative to the server cwd unless absolute, constrained to configured workspace roots, and generated directories are skipped.",
+      inputSchema: listFilesInputSchema,
+      outputSchema: listFilesOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    createListFilesHandler(context),
+  );
+}
+
 export function createListFilesHandler(context: RuntimeContext) {
   return async (input: {
     paths: string[];
@@ -31,27 +53,9 @@ export function createListFilesHandler(context: RuntimeContext) {
     try {
       const result = await listWorkspaceFiles(context, input);
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-        structuredContent: result as unknown as Record<string, unknown>,
-      };
+      return structuredToolResponse(result as unknown as Record<string, unknown>);
     } catch (error) {
-      const normalized = normalizeWorkspaceError(error);
-
-      return {
-        isError: true as const,
-        content: [
-          {
-            type: "text" as const,
-            text: normalized.message,
-          },
-        ],
-      };
+      return toolErrorResponse(error, normalizeWorkspaceError);
     }
   };
 }
