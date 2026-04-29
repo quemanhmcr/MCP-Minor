@@ -1,7 +1,7 @@
 import { SERVER_NAME, SERVER_VERSION, createMcpServer } from "../src/server.js";
 
 describe("createMcpServer", () => {
-  it("creates the MCP server without registering Dirac tools yet", () => {
+  it("creates the MCP server and registers read-only tools", () => {
     const server = createMcpServer({
       cwd: process.cwd(),
       sessionId: "test",

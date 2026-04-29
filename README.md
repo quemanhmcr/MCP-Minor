@@ -43,6 +43,20 @@ Run the server over stdio:
 npm run dev
 ```
 
+The server resolves tool paths relative to `DIRAC_MCP_CWD` when set, otherwise `process.cwd()`. Workspace access is restricted to `DIRAC_MCP_WORKSPACE_ROOTS`, a `path.delimiter`-separated list; when unset, it defaults to the cwd.
+
+Example:
+
+```powershell
+$env:DIRAC_MCP_CWD = "C:\work\repo"
+$env:DIRAC_MCP_WORKSPACE_ROOTS = "C:\work\repo"
+npm run dev
+```
+
+## Tools
+
+- `list_files`: read-only listing for one or more files/directories. Input: `paths: string[]`, optional `recursive`, optional `limit`. Results include absolute `path`, `type`, and stable workspace-relative `relativePath`. Generated directories such as `node_modules`, `dist`, `coverage`, and `.git` are skipped.
+
 ## Git Hygiene
 
 - Use focused branches, for example `setup/mcp-scaffold` or `tool/list-files`.

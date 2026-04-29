@@ -85,7 +85,10 @@ For a ported Dirac tool:
 - Use `@modelcontextprotocol/sdk` `McpServer` with `StdioServerTransport`.
 - Keep server creation separate from stdio startup so tests can instantiate the server without opening transport streams.
 - Initial runtime context contains `cwd`, `sessionId`, and `workspaceRoots`; future path guards and anchor state should use this context.
-- No Dirac tools are registered in the scaffold session.
+- Path resolution in `mcp-server/src/filesystem/workspace.ts` resolves relative user paths against `RuntimeContext.cwd`, permits absolute paths only inside `RuntimeContext.workspaceRoots`, rejects traversal and sibling-prefix escapes, normalizes Windows-style user separators, and returns stable slash-separated workspace-relative paths.
+- `list_files` is registered through `McpServer.registerTool` with zod input/output schemas, read-only/idempotent annotations, and structured MCP output.
+- `list_files` returns deterministic entries shaped as `{ path, type, relativePath }`, sorted by name within each listed directory. It skips generated/heavy directories: `node_modules`, `dist`, `coverage`, and `.git`.
+- `list_files` validates direct calls defensively in addition to MCP zod validation: invalid limits fail fast, oversized limits clamp to `MAX_LIST_FILES_LIMIT`, duplicate/overlapping resolved entries are deduplicated, and missing paths fail fast with a concise tool error.
 
 ## Verification Commands
 
@@ -110,7 +113,7 @@ Status meanings:
 
 | Tool | Status | Priority | Dirac Schema | Dirac Handler/Core | MCP Notes | Session Done |
 | --- | --- | --- | --- | --- | --- | --- |
-| `list_files` | `not_started` | P0 | `src/core/prompts/system-prompt/tools/list_files.ts` | `src/core/task/tools/handlers/ListFilesToolHandler.ts`, `src/services/glob/list-files.ts` | Good first tool. Needs cwd/path guard and ignore handling. Avoid VS Code/task callbacks. |  |
+| `list_files` | `done` | P0 | `src/core/prompts/system-prompt/tools/list_files.ts` | `src/core/task/tools/handlers/ListFilesToolHandler.ts`, `src/services/glob/list-files.ts` | MCP implementation accepts `paths`, optional `recursive`, optional `limit`; returns structured `{ path, type, relativePath }` entries with workspace guarding and generated-directory ignores. | 2026-04-29 |
 | `search_files` | `not_started` | P0 | `src/core/prompts/system-prompt/tools/search_files.ts` | `src/core/task/tools/handlers/SearchFilesToolHandler.ts`, `src/services/ripgrep/index.ts` | Needs `rg` strategy. Can use system `rg` first, then decide whether to vendor Dirac's binary lookup. |  |
 | `read_file` | `not_started` | P0 | `src/core/prompts/system-prompt/tools/read_file.ts` | `src/core/task/tools/handlers/ReadFileToolHandler.ts`, `src/integrations/misc/extract-file-content.ts` | Important because it creates hash anchors for `edit_file`. Needs `AnchorStateManager` session id. |  |
 | `get_file_skeleton` | `not_started` | P1 | `src/core/prompts/system-prompt/tools/get_file_skeleton.ts` | `src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`, `src/utils/ASTAnchorBridge.ts` | Requires tree-sitter WASM packaging and query files. Good after `read_file`. |  |
@@ -143,8 +146,8 @@ Status meanings:
 | --- | --- | --- | --- |
 | MCP server scaffold | `done` | `mcp-server/package.json`, `mcp-server/src/index.ts`, `mcp-server/src/server.ts` | TypeScript MCP SDK server with stdio transport. No Dirac tools registered yet. |
 | Runtime context | `ported` | `mcp-server/src/runtime/context.ts` | Minimal `cwd`, session id, and workspace roots. Needs path guard expansion before file tools. |
-| Path resolution | `not_started` | `src/core/workspace/*`, `src/utils/path.ts` | Prefer slim implementation unless multi-root is required. |
-| Ignore rules | `not_started` | `src/core/ignore/DiracIgnoreController.ts` | Port `.diracignore` plus default ignore patterns. Watcher optional. |
+| Path resolution | `done` | `src/core/workspace/*`, `src/utils/path.ts` | Slim MCP implementation added in `mcp-server/src/filesystem/workspace.ts`; supports cwd-relative/absolute paths, workspace-root guard, sibling-prefix rejection, Windows separator normalization, and stable relative paths. |
+| Ignore rules | `ported` | `src/core/ignore/DiracIgnoreController.ts` | Minimal generated-directory ignores implemented for `list_files`: `node_modules`, `dist`, `coverage`, `.git`. Full `.diracignore` support remains future work. |
 | Hash anchors | `not_started` | `src/utils/AnchorStateManager.ts`, `src/utils/line-hashing.ts`, `src/utils/.hash_anchors` | Required by `read_file`, `edit_file`, AST outputs. |
 | Tree-sitter parsing | `not_started` | `src/services/tree-sitter/*` | Requires WASM files from `tree-sitter-wasms`. Verify package layout in MCP package. |
 | Symbol index | `not_started` | `src/services/symbol-index/*` | Required by reference/rename tools. Decide persistence model. |
@@ -160,6 +163,8 @@ Add one row per session. Keep it short so future sessions can resume quickly.
 | 2026-04-29 | Clone Dirac and map tool porting strategy | `done` | `DIRAC_TOOL_PORTING_NOTES.md`, `PROJECT_PORTING_TRACKER.md` | Manual repo inspection | Confirmed no existing MCP server; plan is standalone MCP with codebase tools only. |
 | 2026-04-29 | Scaffold standalone MCP server foundation | `done` | `.gitignore`, `README.md`, `mcp-server/*`, `PROJECT_PORTING_TRACKER.md` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Created npm TypeScript MCP SDK package using stdio transport. No Dirac tool was ported. |
 | 2026-04-29 | Normalize git/project hygiene | `done` | `.gitignore`, `.gitmodules`, `README.md`, `PROJECT_PORTING_TRACKER.md` | `git status --short`; `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Initialized root git repo, recorded `dirac/` as submodule pinned to `e827ec30d4cdae078588df2040f203b780d657ad`, kept generated artifacts ignored. No Dirac tool was ported. |
+| 2026-04-29 | Port `list_files` and filesystem guard foundation | `done` | `README.md`, `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/*`, `mcp-server/src/tools/list-files.ts`, `mcp-server/src/server.ts`, `mcp-server/test/*` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added reusable workspace path guard, deterministic read-only listing, generated-directory ignores, zod schemas, and MCP in-memory smoke test. |
+| 2026-04-29 | Harden `list_files` for commit readiness | `done` | `PROJECT_PORTING_TRACKER.md`, `mcp-server/src/filesystem/list-files.ts`, `mcp-server/test/list-files.test.ts`, `mcp-server/test/list-files-mcp.test.ts` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added direct input validation, invalid-limit handling, duplicate result dedupe, missing-path fail-fast errors, and MCP out-of-workspace error coverage. No new Dirac tool was ported. |
 
 ## Session Completion Template
 
