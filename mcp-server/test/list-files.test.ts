@@ -27,6 +27,7 @@ describe("listWorkspaceFiles", () => {
     await fs.writeFile(path.join(workspaceRoot, "docs", "guide.md"), "guide");
     await fs.writeFile(path.join(workspaceRoot, "node_modules", "pkg", "index.js"), "ignored");
     await fs.writeFile(path.join(workspaceRoot, "dist", "bundle.js"), "ignored");
+    await fs.writeFile(path.join(workspaceRoot, ".git"), "gitdir: ../.git/modules/example");
   });
 
   afterEach(async () => {
@@ -66,6 +67,7 @@ describe("listWorkspaceFiles", () => {
   it("excludes ignored generated directories", async () => {
     const result = await listWorkspaceFiles(context, { paths: ["."], recursive: true });
 
+    expect(result.entries.map((entry) => entry.relativePath)).not.toContain(".git");
     expect(result.entries.map((entry) => entry.relativePath)).not.toContain("node_modules");
     expect(result.entries.map((entry) => entry.relativePath)).not.toContain("node_modules/pkg/index.js");
     expect(result.entries.map((entry) => entry.relativePath)).not.toContain("dist");

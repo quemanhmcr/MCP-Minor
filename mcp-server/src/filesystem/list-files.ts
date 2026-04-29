@@ -140,7 +140,7 @@ async function listDirectory(
       continue;
     }
 
-    if (entry.isDirectory() && IGNORED_DIRECTORY_NAMES.has(entry.name)) {
+    if (isIgnoredEntry(entry)) {
       continue;
     }
 
@@ -152,6 +152,10 @@ async function listDirectory(
       await listDirectory(resolved, absolutePath, recursive, state);
     }
   }
+}
+
+function isIgnoredEntry(entry: Dirent<string>): boolean {
+  return entry.name === ".git" || (entry.isDirectory() && IGNORED_DIRECTORY_NAMES.has(entry.name));
 }
 
 async function readDirectory(resolved: ResolvedWorkspacePath, directoryPath: string): Promise<Dirent<string>[]> {
