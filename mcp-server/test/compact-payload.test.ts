@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { compactFileSkeletonResult, formatFileSkeletonCompact, getWorkspaceFileSkeleton } from "../src/filesystem/file-skeleton.js";
+import { compactGetFunctionResult, getWorkspaceFunctions } from "../src/filesystem/get-function.js";
 import { compactListFilesResult, listWorkspaceFiles } from "../src/filesystem/list-files.js";
 import { compactReadFileResult, formatReadFileResult, readWorkspaceFiles } from "../src/filesystem/read-file.js";
 import { compactSearchFilesResult, searchWorkspaceFiles } from "../src/filesystem/search-files.js";
@@ -44,6 +45,7 @@ describe("compact MCP payload contracts", () => {
     const search = await searchWorkspaceFiles(context, { paths: ["."], regex: "searchable" });
     const read = await readWorkspaceFiles(context, { paths: ["src/file.tsx"], includeAnchors: false });
     const skeleton = await getWorkspaceFileSkeleton(context, { paths: ["src/file.tsx"] });
+    const functions = await getWorkspaceFunctions(context, { paths: ["src/file.tsx"], functionNames: ["Component"] });
 
     const cases = [
       ["list_files outline", compactListFilesResult(list), 80],
@@ -52,6 +54,7 @@ describe("compact MCP payload contracts", () => {
       ["read_file read", compactReadFileResult(read, { includeAnchors: false }), 260],
       ["get_file_skeleton outline", compactFileSkeletonResult(skeleton, { view: "outline" }), 240],
       ["get_file_skeleton signatures", compactFileSkeletonResult(skeleton, { view: "signatures" }), 240],
+      ["get_function source", compactGetFunctionResult(functions), 210],
     ] as const;
 
     for (const [name, structuredContent, maxJsonChars] of cases) {

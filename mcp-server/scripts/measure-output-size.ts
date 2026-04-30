@@ -6,6 +6,7 @@ import {
   formatFileSkeletonCompact,
   getWorkspaceFileSkeleton,
 } from "../src/filesystem/file-skeleton.js";
+import { compactGetFunctionResult, formatGetFunctionCompact, getWorkspaceFunctions } from "../src/filesystem/get-function.js";
 import { compactListFilesResult, formatListFilesCompact, listWorkspaceFiles } from "../src/filesystem/list-files.js";
 import {
   compactReadFileResult,
@@ -34,6 +35,7 @@ const skeletonFiles = [
 console.log("Output size smoke. Token estimate is deterministic ceil(chars / 4); no tokenizer dependency is used.");
 console.log("MCP-visible total chars = content text chars + JSON.stringify(structuredContent).length.");
 await measureSkeleton();
+await measureGetFunction();
 await measureReadFile();
 await measureEditWorkflowTax();
 await measureSearchFiles();
@@ -77,6 +79,44 @@ async function measureSkeleton(): Promise<void> {
 
   console.log("\nget_file_skeleton");
   console.table(rows);
+}
+
+async function measureGetFunction(): Promise<void> {
+  const file = "mcp-server/src/filesystem/file-skeleton.ts";
+  const raw = await readRaw(file);
+  const sourceResult = await getWorkspaceFunctions(context, {
+    paths: [file],
+    functionNames: ["getWorkspaceFileSkeleton"],
+    contextLines: 1,
+  });
+  const editResult = await getWorkspaceFunctions(
+    context,
+    {
+      paths: [file],
+      functionNames: ["getWorkspaceFileSkeleton"],
+      contextLines: 1,
+    },
+    { includeEditAnchors: true },
+  );
+  const source = measurePayload(formatGetFunctionCompact(sourceResult), compactGetFunctionResult(sourceResult));
+  const edit = measurePayload(formatGetFunctionCompact(editResult, { view: "edit" }), compactGetFunctionResult(editResult, { view: "edit" }));
+  const full = measureFullPayload(sourceResult as unknown as Record<string, unknown>);
+
+  console.log("\nget_function");
+  console.table([
+    {
+      file,
+      functionName: "getWorkspaceFileSkeleton",
+      rawChars: raw.length,
+      sourceTotalChars: source.totalChars,
+      editTotalChars: edit.totalChars,
+      fullTotalChars: full.totalChars,
+      sourceRawRatio: formatRatio(source.totalChars, raw.length),
+      editRawRatio: formatRatio(edit.totalChars, raw.length),
+      sourceFullRatio: formatRatio(source.totalChars, full.totalChars),
+      approxSourceTokens: approximateTokens(source.totalChars),
+    },
+  ]);
 }
 
 async function measureReadFile(): Promise<void> {

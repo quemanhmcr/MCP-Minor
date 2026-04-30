@@ -72,6 +72,12 @@ Standalone MCP packaging needs source/test and built-output asset resolution. Bu
 
 Known compatibility point: `web-tree-sitter@0.22.6` works with `tree-sitter-wasms@^0.1.13`; newer `web-tree-sitter@0.26` failed to load those grammar binaries during this port.
 
+### Get Function
+
+Upstream `get_function` schema takes `paths` and `function_names`. The handler also accepts a legacy singular `path` internally, resolves each path through the workspace resolver, and delegates AST extraction to `ASTAnchorBridge.getFunctions`.
+
+`ASTAnchorBridge.getFunctions` matches requested names against dot-normalized qualified names and also accepts suffix matches. It formats each result as `relPath::fullName`, includes a function hash, emits edit anchors by default, and separates multiple functions with `---`. It also compares the current function hash with previous conversation history to suppress unchanged repeated output. The standalone MCP port intentionally does not depend on conversation history and keeps edit anchors behind an explicit `view: "edit"`.
+
 ### Symbol Index
 
 Upstream symbol index code uses SQLite WASM and `.dirac-symbol-index/data.db`. A standalone MCP server needs an explicit persistence decision before references or rename tools:
