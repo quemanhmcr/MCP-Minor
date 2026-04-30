@@ -6,7 +6,12 @@ import {
   formatFileSkeletonCompact,
   getWorkspaceFileSkeleton,
 } from "../src/filesystem/file-skeleton.js";
-import { compactGetFunctionResult, formatGetFunctionCompact, getWorkspaceFunctions } from "../src/filesystem/get-function.js";
+import {
+  compactGetFunctionResult,
+  formatGetFunctionCompact,
+  getWorkspaceFunctions,
+  structuredGetFunctionResult,
+} from "../src/filesystem/get-function.js";
 import { compactListFilesResult, formatListFilesCompact, listWorkspaceFiles } from "../src/filesystem/list-files.js";
 import {
   compactReadFileResult,
@@ -86,21 +91,21 @@ async function measureGetFunction(): Promise<void> {
   const raw = await readRaw(file);
   const sourceResult = await getWorkspaceFunctions(context, {
     paths: [file],
-    functionNames: ["getWorkspaceFileSkeleton"],
+    function_names: ["getWorkspaceFileSkeleton"],
     contextLines: 1,
   });
   const editResult = await getWorkspaceFunctions(
     context,
     {
       paths: [file],
-      functionNames: ["getWorkspaceFileSkeleton"],
+      function_names: ["getWorkspaceFileSkeleton"],
       contextLines: 1,
     },
     { includeEditAnchors: true },
   );
   const source = measurePayload(formatGetFunctionCompact(sourceResult), compactGetFunctionResult(sourceResult));
   const edit = measurePayload(formatGetFunctionCompact(editResult, { view: "edit" }), compactGetFunctionResult(editResult, { view: "edit" }));
-  const full = measureFullPayload(sourceResult as unknown as Record<string, unknown>);
+  const full = measureFullPayload(structuredGetFunctionResult(sourceResult));
 
   console.log("\nget_function");
   console.table([

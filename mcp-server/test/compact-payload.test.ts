@@ -45,7 +45,7 @@ describe("compact MCP payload contracts", () => {
     const search = await searchWorkspaceFiles(context, { paths: ["."], regex: "searchable" });
     const read = await readWorkspaceFiles(context, { paths: ["src/file.tsx"], includeAnchors: false });
     const skeleton = await getWorkspaceFileSkeleton(context, { paths: ["src/file.tsx"] });
-    const functions = await getWorkspaceFunctions(context, { paths: ["src/file.tsx"], functionNames: ["Component"] });
+    const functions = await getWorkspaceFunctions(context, { paths: ["src/file.tsx"], function_names: ["Component"] });
 
     const cases = [
       ["list_files outline", compactListFilesResult(list), 80],
@@ -54,7 +54,7 @@ describe("compact MCP payload contracts", () => {
       ["read_file read", compactReadFileResult(read, { includeAnchors: false }), 260],
       ["get_file_skeleton outline", compactFileSkeletonResult(skeleton, { view: "outline" }), 240],
       ["get_file_skeleton signatures", compactFileSkeletonResult(skeleton, { view: "signatures" }), 240],
-      ["get_function source", compactGetFunctionResult(functions), 210],
+      ["get_function source", compactGetFunctionResult(functions), 240],
     ] as const;
 
     for (const [name, structuredContent, maxJsonChars] of cases) {

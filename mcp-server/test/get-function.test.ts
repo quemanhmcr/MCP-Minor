@@ -51,7 +51,6 @@ describe("getWorkspaceFunctions", () => {
     const result = await getWorkspaceFunctions(context, {
       paths: ["src/sample.ts"],
       function_names: ["buildName"],
-      contextLines: 0,
     });
 
     expect(result).toMatchObject({
@@ -64,6 +63,7 @@ describe("getWorkspaceFunctions", () => {
       requestedName: "buildName",
       qualifiedName: "buildName",
       kind: "function",
+      matchType: "exact",
       signature: "export function buildName(value: string): string",
       location: { startLine: 1, endLine: 3 },
       sourceStartLine: 1,
@@ -74,6 +74,8 @@ describe("getWorkspaceFunctions", () => {
     expect(compact).toContain("src/sample.ts::buildName | function | L1-3");
     expect(compact).toContain("1|export function buildName(value: string): string {");
     expect(compact).not.toContain("startByte");
+    expect(compact).not.toContain("parse:ok");
+    expect(compact).not.toContain("body:");
     expect(JSON.stringify(compactGetFunctionResult(result))).not.toContain("sourceStartLine");
   });
 
@@ -82,7 +84,7 @@ describe("getWorkspaceFunctions", () => {
       context,
       {
         paths: ["src/sample.ts"],
-        functionNames: ["Greeter.getName"],
+        function_names: ["Greeter.getName"],
         contextLines: 1,
       },
       { includeEditAnchors: true },
@@ -99,28 +101,50 @@ describe("getWorkspaceFunctions", () => {
       contextLinesAfter: 1,
     });
     expect(match.edit?.content).toContain("src/sample.ts L4-8/14 edit");
-    expect(match.edit?.content).toMatch(/A[0-9a-z]{6}§ {2}getName\(\): string \{/u);
-    expect(formatGetFunctionCompact(result, { view: "edit" })).toContain("§");
+    expect(match.edit?.content).toMatch(/A[0-9a-z]{6}. {2}getName\(\): string \{/u);
+    expect(formatGetFunctionCompact(result, { view: "edit" })).toContain("body:");
   });
 
-  it("rejects ambiguous suffix matches", async () => {
-    await expect(getWorkspaceFunctions(context, { paths: ["src/sample.ts"], functionNames: ["save"] })).rejects.toThrow(
-      "Function name 'save' is ambiguous in src/sample.ts",
+  it("returns all ambiguous suffix matches by default and supports strict requireUnique", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "ambiguous.ts"),
+      ["class First { save() { return 1; } }", "class Second { save() { return 2; } }", ""].join("\n"),
     );
+
+    const result = await getWorkspaceFunctions(context, { paths: ["src/ambiguous.ts"], function_names: ["save"] });
+
+    expect(result.matchCount).toBe(2);
+    expect(result.ambiguous).toEqual([
+      {
+        relativePath: "src/ambiguous.ts",
+        requestedName: "save",
+        candidates: ["First.save", "Second.save"],
+      },
+    ]);
+    expect(result.files[0].matches.map((match) => [match.qualifiedName, match.matchType])).toEqual([
+      ["First.save", "suffix"],
+      ["Second.save", "suffix"],
+    ]);
+
+    await expect(
+      getWorkspaceFunctions(context, { paths: ["src/ambiguous.ts"], function_names: ["save"], requireUnique: true }),
+    ).rejects.toThrow("Function name 'save' is ambiguous in src/ambiguous.ts");
   });
 
-  it("returns explicit missing metadata for partial misses and errors when none are found", async () => {
+  it("returns explicit missing metadata for partial and complete misses", async () => {
     const partial = await getWorkspaceFunctions(context, {
       paths: ["src/sample.ts"],
-      functionNames: ["buildName", "missing"],
+      function_names: ["buildName", "missing"],
     });
 
     expect(partial.missing).toEqual([{ relativePath: "src/sample.ts", functionName: "missing" }]);
     expect(formatGetFunctionCompact(partial)).toContain("src/sample.ts::missing missing");
 
-    await expect(getWorkspaceFunctions(context, { paths: ["src/sample.ts"], functionNames: ["missing"] })).rejects.toThrow(
-      "None of the requested functions (missing) were found",
-    );
+    const missing = await getWorkspaceFunctions(context, { paths: ["src/sample.ts"], function_names: ["missing"] });
+    expect(missing).toMatchObject({
+      matchCount: 0,
+      missing: [{ relativePath: "src/sample.ts", functionName: "missing" }],
+    });
   });
 
   it("truncates long function source by line and character budgets", async () => {
@@ -131,25 +155,97 @@ describe("getWorkspaceFunctions", () => {
 
     const result = await getWorkspaceFunctions(context, {
       paths: ["src/long.ts"],
-      functionNames: ["long"],
-      contextLines: 0,
+      function_names: ["long"],
       sourceLineLimit: 3,
       maxSourceChars: 80,
     });
 
     expect(result.truncated).toBe(true);
     expect(result.files[0].matches[0].source).toContain("[get_function source truncated]");
+    expect(result.files[0].matches[0].truncatedBy).toBe("lines+chars");
   });
 
-  it("surfaces file safety errors from the AST loader", async () => {
+  it("keeps default context at zero and hashes exact body separately from returned view", async () => {
+    const result = await getWorkspaceFunctions(context, {
+      paths: ["src/sample.ts"],
+      function_names: ["Greeter.getName"],
+    });
+    const withContext = await getWorkspaceFunctions(context, {
+      paths: ["src/sample.ts"],
+      function_names: ["Greeter.getName"],
+      contextLines: 1,
+    });
+
+    expect(result.contextLines).toBe(0);
+    expect(result.files[0].matches[0]).toMatchObject({
+      sourceStartLine: 5,
+      sourceEndLine: 7,
+      contextLinesBefore: 0,
+      contextLinesAfter: 0,
+    });
+    expect(withContext.files[0].matches[0].bodyHash).toBe(result.files[0].matches[0].bodyHash);
+    expect(withContext.files[0].matches[0].viewHash).not.toBe(result.files[0].matches[0].viewHash);
+  });
+
+  it("handles CRLF, BOM, unicode names, and no trailing newline", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "unicode.ts"),
+      "\uFEFFexport function café(value: string) {\r\n  return value.trim();\r\n}",
+    );
+
+    const result = await getWorkspaceFunctions(context, {
+      paths: ["src/unicode.ts"],
+      function_names: ["café"],
+    });
+
+    expect(result.matchCount).toBe(1);
+    expect(result.files[0].matches[0]).toMatchObject({
+      qualifiedName: "café",
+      sourceStartLine: 1,
+      sourceEndLine: 3,
+    });
+  });
+
+  it("collapses TypeScript overload signatures to the implementation", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "overloads.ts"),
+      [
+        "export function parse(value: string): string;",
+        "export function parse(value: number): string;",
+        "export function parse(value: string | number): string {",
+        "  return String(value);",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await getWorkspaceFunctions(context, {
+      paths: ["src/overloads.ts"],
+      function_names: ["parse"],
+    });
+
+    expect(result.matchCount).toBe(1);
+    expect(result.files[0].matches[0].source).toContain("3|export function parse(value: string | number): string {");
+  });
+
+  it("surfaces file safety errors from the AST loader and get_function revalidation", async () => {
     await fs.writeFile(path.join(workspaceRoot, "README.md"), "# readme\n");
 
-    await expect(getWorkspaceFunctions(context, { paths: ["README.md"], functionNames: ["anything"] })).rejects.toThrow(
+    await expect(getWorkspaceFunctions(context, { paths: ["README.md"], function_names: ["anything"] })).rejects.toThrow(
       "Unsupported get_file_skeleton file extension '.md'",
     );
-    await expect(getWorkspaceFunctions(context, { paths: [".."], functionNames: ["anything"] })).rejects.toThrow(
+    await expect(getWorkspaceFunctions(context, { paths: [".."], function_names: ["anything"] })).rejects.toThrow(
       "outside the configured workspace roots",
     );
+  });
+
+  it("caps overly broad path/function lookup requests", async () => {
+    await expect(
+      getWorkspaceFunctions(context, {
+        paths: ["src/sample.ts", "src/sample.ts"],
+        function_names: Array.from({ length: 101 }, (_, index) => `fn${index}`),
+      }),
+    ).rejects.toThrow("path/function lookups exceeds the limit");
   });
 });
 
@@ -175,7 +271,7 @@ describe("getWorkspaceFunctions real Dirac repo smoke", () => {
   ])("extracts $functionName from pinned Dirac file", async ({ filePath, functionName, expected }) => {
     const result = await getWorkspaceFunctions(context, {
       paths: [filePath],
-      functionNames: [functionName],
+      function_names: [functionName],
       contextLines: 0,
     });
     const compact = formatGetFunctionCompact(result);

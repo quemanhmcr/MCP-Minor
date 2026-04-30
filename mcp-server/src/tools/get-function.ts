@@ -6,11 +6,14 @@ import {
   DEFAULT_GET_FUNCTION_SOURCE_CHARS,
   DEFAULT_GET_FUNCTION_SOURCE_LINE_LIMIT,
   MAX_GET_FUNCTION_CONTEXT_LINES,
+  MAX_GET_FUNCTION_LOOKUPS,
   MAX_GET_FUNCTION_SOURCE_CHARS,
   MAX_GET_FUNCTION_SOURCE_LINE_LIMIT,
+  MIN_GET_FUNCTION_SOURCE_CHARS,
   compactGetFunctionResult,
   formatGetFunctionCompact,
   getWorkspaceFunctions,
+  structuredGetFunctionResult,
 } from "../filesystem/get-function.js";
 import { normalizeWorkspaceError } from "../filesystem/workspace.js";
 import type { RuntimeContext } from "../runtime/context.js";
@@ -32,16 +35,19 @@ const getFunctionTargetSchema = z.object({
   kind: z.enum(["function", "method"]),
   signature: z.string(),
   signatureTruncated: z.boolean(),
+  matchType: z.enum(["exact", "suffix"]),
   location: sourceLocationSchema,
   containsParseErrors: z.boolean(),
-  sourceHash: z.string(),
-  source: z.string(),
+  bodyHash: z.string(),
+  viewHash: z.string(),
+  source: z.string().optional(),
   sourceStartLine: z.number().int().positive(),
   sourceEndLine: z.number().int().positive(),
   sourceLineCount: z.number().int().nonnegative(),
   contextLinesBefore: z.number().int().nonnegative(),
   contextLinesAfter: z.number().int().nonnegative(),
   truncated: z.boolean(),
+  truncatedBy: z.enum(["lines", "chars", "lines+chars"]).optional(),
   edit: z
     .object({
       content: z.string(),
@@ -52,8 +58,10 @@ const getFunctionTargetSchema = z.object({
 
 export const getFunctionInputSchema = {
   paths: z.array(z.string().min(1)).min(1).describe("JavaScript or TypeScript source files to inspect."),
-  functionNames: z.array(z.string().min(1)).min(1).optional().describe("Exact or suffix-qualified function names, such as buildName or Worker.run."),
-  function_names: z.array(z.string().min(1)).min(1).optional().describe("Dirac-compatible alias for functionNames."),
+  function_names: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe(`Exact or suffix-qualified function names, such as buildName or Worker.run. paths.length * function_names.length must be <= ${MAX_GET_FUNCTION_LOOKUPS}.`),
   contextLines: z
     .number()
     .int()
@@ -73,12 +81,14 @@ export const getFunctionInputSchema = {
   maxSourceChars: z
     .number()
     .int()
-    .positive()
+    .min(MIN_GET_FUNCTION_SOURCE_CHARS)
     .optional()
     .describe(
-      `Maximum source/context characters per returned function. Defaults to ${DEFAULT_GET_FUNCTION_SOURCE_CHARS}; values above ${MAX_GET_FUNCTION_SOURCE_CHARS} are clamped.`,
+      `Maximum source/context characters per returned function. Defaults to ${DEFAULT_GET_FUNCTION_SOURCE_CHARS}; minimum ${MIN_GET_FUNCTION_SOURCE_CHARS}; values above ${MAX_GET_FUNCTION_SOURCE_CHARS} are clamped.`,
     ),
   view: z.enum(["source", "edit", "full"]).optional().describe("Output view. source is compact bounded source; edit adds edit-ready anchors; full returns rich structured metadata."),
+  requireUnique: z.boolean().optional().describe("When true, suffix matches that resolve to multiple candidates are returned as an error instead of all candidates."),
+  includeSourceInStructured: z.boolean().optional().describe("Only applies to view=full. Includes bounded source text in structuredContent when true; omitted by default to avoid duplicating MCP text payloads."),
   format: z.enum(["compact", "json"]).optional().describe("Deprecated alias: compact maps to view=source, json maps to view=full."),
 };
 
@@ -93,6 +103,7 @@ export const getFunctionOutputSchema = {
       matches: z.array(getFunctionTargetSchema).optional(),
       matchCount: z.number().int().nonnegative().optional(),
       missing: z.array(z.string()),
+      ambiguous: z.array(z.object({ requestedName: z.string(), candidates: z.array(z.string()) })).optional(),
     }),
   ),
   view: z.enum(["source", "edit"]).optional(),
@@ -102,7 +113,9 @@ export const getFunctionOutputSchema = {
   maxSourceChars: z.number().int().positive().optional(),
   matchCount: z.number().int().nonnegative(),
   missingCount: z.number().int().nonnegative().optional(),
+  ambiguousCount: z.number().int().nonnegative().optional(),
   missing: z.array(z.object({ relativePath: z.string(), functionName: z.string() })).optional(),
+  ambiguous: z.array(z.object({ relativePath: z.string(), requestedName: z.string(), candidates: z.array(z.string()) })).optional(),
   truncated: z.boolean(),
 };
 
@@ -112,7 +125,7 @@ export function registerGetFunctionTool(server: McpServer, context: RuntimeConte
     {
       title: "Get function",
       description:
-        "Extract a targeted JavaScript or TypeScript function/method implementation from source files. Defaults to compact bounded source; use view: \"full\" for structured metadata or view: \"edit\" for edit-ready anchors.",
+        "Extract targeted JavaScript or TypeScript function/method implementations from source files. Matches exact qualified names first, then suffix names; ambiguous suffix matches return all candidates unless requireUnique is true. Defaults to compact bounded source; use view: \"full\" for structured metadata or view: \"edit\" for edit-ready anchors.",
       inputSchema: getFunctionInputSchema,
       outputSchema: getFunctionOutputSchema,
       annotations: {
@@ -134,6 +147,8 @@ export function createGetFunctionHandler(context: RuntimeContext) {
     contextLines?: number;
     sourceLineLimit?: number;
     maxSourceChars?: number;
+    requireUnique?: boolean;
+    includeSourceInStructured?: boolean;
     view?: GetFunctionView;
     format?: ToolOutputFormat;
   }) => {
@@ -146,7 +161,7 @@ export function createGetFunctionHandler(context: RuntimeContext) {
         return compactToolResponse(formatGetFunctionCompact(result, options), compactGetFunctionResult(result, options));
       }
 
-      return structuredToolResponse(result as unknown as Record<string, unknown>);
+      return structuredToolResponse(structuredGetFunctionResult(result, { includeSource: input.includeSourceInStructured }));
     } catch (error) {
       return toolErrorResponse(error, normalizeWorkspaceError);
     }

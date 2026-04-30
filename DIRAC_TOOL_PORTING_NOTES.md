@@ -78,6 +78,8 @@ Upstream `get_function` schema takes `paths` and `function_names`. The handler a
 
 `ASTAnchorBridge.getFunctions` matches requested names against dot-normalized qualified names and also accepts suffix matches. It formats each result as `relPath::fullName`, includes a function hash, emits edit anchors by default, and separates multiple functions with `---`. It also compares the current function hash with previous conversation history to suppress unchanged repeated output. The standalone MCP port intentionally does not depend on conversation history and keeps edit anchors behind an explicit `view: "edit"`.
 
+Standalone MCP divergence after review: no-match and ambiguous suffix results are structured non-error outcomes; `function_names` is the canonical public input; exact matches are preferred before suffix matches; TypeScript overload signatures are collapsed to an implementation when one is present; `bodyHash` and `viewHash` are separate; full structured output omits source text unless explicitly requested.
+
 ### Symbol Index
 
 Upstream symbol index code uses SQLite WASM and `.dirac-symbol-index/data.db`. A standalone MCP server needs an explicit persistence decision before references or rename tools:

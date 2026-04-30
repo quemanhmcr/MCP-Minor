@@ -87,7 +87,7 @@ A tool may be marked `production-ready` only when all apply:
 | `read_file` | production-ready | UTF-8 text/code | no rich extraction for PDF/DOCX/XLSX/notebooks/images | medium |
 | `edit_file` | production-ready | UTF-8 text/code | single-file replace-only, no insert/end-anchor/multi-file batching | medium |
 | `get_file_skeleton` | production-ready | JS/TS/JSX/TSX | no call graph comments, no non-JS/TS languages | medium |
-| `get_function` | production-ready | JS/TS/JSX/TSX | no symbol index, references, overload grouping, or non-JS/TS languages | medium |
+| `get_function` | production-ready | JS/TS/JSX/TSX | skeleton-query recall limits, no symbol index/references/object-literal members/non-JS/TS languages | medium |
 | `find_symbol_references` | not-started | undecided | needs symbol index and persistence decision | high |
 | `replace_symbol` | not-started | undecided | needs AST range resolution and mutation model | high |
 | `rename_symbol` | not-started | undecided | needs symbol index and multi-file diff/reporting | high |
@@ -103,6 +103,7 @@ See README for tool schemas and output views.
 - Edit scope gap: `edit_file` is single-file replace-only. Mitigation: strict anchored validation and no-partial-write behavior. Trigger to revisit: consumer needs multi-file or insert-specific edits.
 - Anchor lifecycle: anchors are in-memory and session-scoped. Mitigation: `edit_file` requires prior `read_file view: "edit"` and rejects stale hashes. Trigger to revisit: long-lived server sessions need cleanup or persistence.
 - Tree-sitter language scope: only JS/TS/TSX assets and queries are packaged. Mitigation: fail unsupported extensions clearly. Trigger to revisit: porting non-JS/TS AST tools.
+- AST recall coupling: `get_function` consumes `get_file_skeleton` candidates, so constructs absent from skeleton queries are absent from targeted extraction. Mitigation: tests cover core emitted constructs and docs state the limitation. Trigger to revisit: object-literal members, default export targeting, or broader JS/TS symbol recall become requirements.
 - Symbol index: persistence model is undecided. Mitigation: defer symbol tools. Trigger to revisit: starting `find_symbol_references` or `rename_symbol`.
 - Command execution: no permission model exists. Mitigation: keep unported. Trigger to revisit: explicit sandbox policy is designed.
 
@@ -157,11 +158,11 @@ Measured on 2026-04-30 with `npm run measure:output-size`. True MCP-visible size
 | `read_file view:"edit"` on same file | 28,955 | 36,943 | 379,452 | 1.276x raw / 0.097x full |
 | `get_file_skeleton view:"outline"` on same file | 28,955 | 2,872 | 72,100 | 0.099x raw / 0.040x full |
 | `get_file_skeleton view:"signatures"` on same file | 28,955 | 9,121 | 72,100 | 0.315x raw / 0.127x full |
-| `get_function view:"source"` for `getWorkspaceFileSkeleton` in same file | 28,955 | 995 | 3,454 | 0.034x raw / 0.288x full |
-| `get_function view:"edit"` for same target | 28,955 | 1,154 | 3,454 | 0.040x raw / 0.334x full |
+| `get_function view:"source"` for `getWorkspaceFileSkeleton` in same file | 28,955 | 993 | 2,502 | 0.034x raw / 0.397x full |
+| `get_function view:"edit"` for same target | 28,955 | 1,184 | 2,502 | 0.041x raw / 0.473x full |
 | React/TSX generic fixture signatures | 2,511 | 1,752 | 11,294 | 0.698x raw / 0.155x full |
-| `search_files view:"matches"` over `mcp-server/src/**/*.ts` | n/a | 10,979 | 85,178 | 0.129x full |
-| `search_files view:"files"` over same query | n/a | 1,428 | 85,178 | 0.017x full |
+| `search_files view:"matches"` over `mcp-server/src/**/*.ts` | n/a | 10,960 | 85,138 | 0.129x full |
+| `search_files view:"files"` over same query | n/a | 1,423 | 85,138 | 0.017x full |
 | `list_files view:"outline"` on `mcp-server/src` | n/a | 1,176 | 9,810 | 0.120x full |
 
 Edit workflow tax on `mcp-server/src/filesystem/file-skeleton.ts`:
@@ -220,11 +221,15 @@ For this file, the new workflow becomes cheaper at about seven exploratory reads
 - 2026-04-30: Measure true MCP-visible payload as content plus structuredContent JSON. Reason: many clients expose both channels to models.
 - 2026-04-30: Keep documentation split by role: README contract, tracker state, notes upstream research. Reason: prevents drift and reduces session resume cost.
 - 2026-04-30: Make `get_function` default to compact bounded source without anchors, with `view: "edit"` as the explicit edit-ready mode. Reason: targeted reads should stay cheap unless mutation is intended.
+- 2026-04-30: Keep `get_function` no-match and ambiguous suffix matches as structured results instead of tool errors. Reason: agents recover better from predictable result shapes with candidate metadata; operational failures remain errors.
+- 2026-04-30: Use canonical `function_names` in the MCP schema while accepting `functionNames` only as a handler compatibility alias. Reason: avoids two visible fields with overlapping semantics.
+- 2026-04-30: Split `get_function` hashes into `bodyHash` and `viewHash`, and omit source from `view: "full"` structured metadata unless explicitly requested. Reason: body identity should not drift with context, and MCP clients often expose both text and structured channels.
 
 ## Session Log
 
 ### Recent Sessions
 
+- 2026-04-30 - `get_function` expert hardening - changed no-match/ambiguous suffixes to structured results, defaulted context to 0, added path revalidation, request caps, overload collapse, body/view hashes, metadata-only full output, and CRLF/BOM/unicode/truncation coverage. Verification: `npm run build`, `npm run test` (185 tests), `npm run lint`, `npm run typecheck`, built tree-sitter smoke, `npm run measure:output-size`. Next: audit `.diracignore` needs or plan symbol index persistence.
 - 2026-04-30 - `get_function` - ported targeted JS/TS function extraction with compact/full/edit views, ambiguity and missing-target handling. Verification: `npm run build`, `npm run test`, `npm run lint`, `npm run typecheck`, built tree-sitter smoke, `npm run measure:output-size`, repo status/submodule/dist/diff checks. Next: audit `.diracignore` needs or plan symbol index persistence.
 - 2026-04-30 - docs architecture cleanup - rewrote README/TRACKER/NOTES by canonical role: contract, live state, upstream research. Next: review diffs, then port `get_function`.
 - 2026-04-30 - output view calibration - measured true MCP-visible payloads, tightened `read_file` views to 1.093x/1.276x raw, documented anchor entropy, added wrong-view edit metadata and React/TSX signature coverage. Next: `get_function`.

@@ -214,26 +214,27 @@ Input:
 ```ts
 {
   paths: string[];
-  functionNames?: string[];
-  function_names?: string[];
+  function_names: string[];
   contextLines?: number;
   sourceLineLimit?: number;
   maxSourceChars?: number;
+  requireUnique?: boolean;
+  includeSourceInStructured?: boolean;
   view?: "source" | "edit" | "full";
 }
 ```
 
 Views:
 
-- `source` default: compact text with `relative/path::qualifiedName`, kind, line range, signature, source hash, parse marker, and bounded line-numbered source/context. Structured content is summary-only.
-- `edit`: same compact target output, but source lines are returned through `read_file view: "edit"` semantics and prepare `edit_file` anchors for the returned range.
-- `full`: structured metadata with absolute `path`, requested and resolved names, kind, signature, line/byte locations, parse flags, source hash, bounded source/context, missing-target metadata, and truncation metadata.
+- `source` default: compact text with `relative/path::qualifiedName`, kind, line range, bounded signature, suffix-match request marker when relevant, parse-error marker only when relevant, truncation marker, and bounded line-numbered source. Structured content is summary-only.
+- `edit`: same compact target output, but source lines are returned through `read_file view: "edit"` semantics and prepare `edit_file` anchors for the returned range. The header includes `body` and `view` hashes.
+- `full`: structured metadata with absolute `path`, requested and resolved names, match type, kind, signature, line/byte locations, parse flags, `bodyHash`, `viewHash`, missing and ambiguous target metadata, and truncation metadata. Source text is omitted from `structuredContent` unless `includeSourceInStructured: true`.
 
 Supported extensions: `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`.
 
-Name matching accepts exact qualified names and suffix-qualified names. Examples: `buildName`, `Greeter.getName`, and `getName` when it resolves to exactly one matching method in the file. Ambiguous suffix matches fail explicitly instead of returning an arbitrary function. `function_names` is kept as a Dirac-compatible alias for `functionNames`.
+Name matching prefers exact qualified names, then falls back to suffix-qualified names. Examples: `buildName`, `Greeter.getName`, and `getName`. Ambiguous suffix matches return all candidates plus fully qualified names by default; set `requireUnique: true` for strict ambiguity errors. Missing names are returned in metadata even when no functions match.
 
-Notes: default output intentionally omits edit anchors. Use `view: "edit"` when the next step is mutation. The tool uses the current tree-sitter skeleton scope, so it supports functions, named arrow/function expressions, constructors, and methods already visible to `get_file_skeleton`; it does not use a symbol index and does not find references, call sites, overload groups, or non-JS/TS symbols.
+Notes: default output intentionally omits edit anchors and defaults `contextLines` to `0`. `paths.length * function_names.length` is capped at 200. `maxSourceChars` defaults to 30,000, has a 64 character minimum, and is capped at 120,000. Use `view: "edit"` when the next step is mutation. The tool uses the current tree-sitter skeleton scope, so it supports functions, named arrow/function expressions, constructors, and methods already visible to `get_file_skeleton`; it does not use a symbol index and does not find references, call sites, object-literal methods that are not emitted by the skeleton, or non-JS/TS symbols. TypeScript overload signatures are collapsed to the implementation when an implementation is present.
 
 ## Anchors
 

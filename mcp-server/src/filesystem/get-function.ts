@@ -1,4 +1,5 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, type Stats } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   formatReadFileResult,
@@ -8,21 +9,27 @@ import {
 import {
   getWorkspaceFileSkeleton,
   type FileSkeletonEntry,
+  MAX_FILE_SKELETON_BYTES,
+  MAX_FILE_SKELETON_BYTES_LABEL,
   type SkeletonEntry,
   type SkeletonEntryKind,
   type SourceLocation,
 } from "./file-skeleton.js";
+import { isPathInside, type ResolvedWorkspacePath, resolveWorkspacePath } from "./workspace.js";
 import { contentHash } from "../runtime/anchor-state.js";
 import type { RuntimeContext } from "../runtime/context.js";
 
-export const DEFAULT_GET_FUNCTION_CONTEXT_LINES = 1;
+export const DEFAULT_GET_FUNCTION_CONTEXT_LINES = 0;
 export const MAX_GET_FUNCTION_CONTEXT_LINES = 20;
 export const DEFAULT_GET_FUNCTION_SOURCE_LINE_LIMIT = 160;
 export const MAX_GET_FUNCTION_SOURCE_LINE_LIMIT = 500;
 export const DEFAULT_GET_FUNCTION_SOURCE_CHARS = 30_000;
 export const MAX_GET_FUNCTION_SOURCE_CHARS = 120_000;
+export const MIN_GET_FUNCTION_SOURCE_CHARS = 64;
+export const MAX_GET_FUNCTION_LOOKUPS = 200;
 
 const TARGET_KINDS = new Set<SkeletonEntryKind>(["function", "method"]);
+const MAX_COMPACT_SIGNATURE_CHARS = 120;
 
 export class GetFunctionError extends Error {
   constructor(message: string) {
@@ -38,7 +45,11 @@ export interface GetFunctionInput {
   contextLines?: number;
   sourceLineLimit?: number;
   maxSourceChars?: number;
+  requireUnique?: boolean;
 }
+
+export type GetFunctionMatchType = "exact" | "suffix";
+export type GetFunctionTruncatedBy = "lines" | "chars" | "lines+chars";
 
 export interface GetFunctionTarget {
   requestedName: string;
@@ -47,9 +58,11 @@ export interface GetFunctionTarget {
   kind: "function" | "method";
   signature: string;
   signatureTruncated: boolean;
+  matchType: GetFunctionMatchType;
   location: SourceLocation;
   containsParseErrors: boolean;
-  sourceHash: string;
+  bodyHash: string;
+  viewHash: string;
   source: string;
   sourceStartLine: number;
   sourceEndLine: number;
@@ -57,6 +70,7 @@ export interface GetFunctionTarget {
   contextLinesBefore: number;
   contextLinesAfter: number;
   truncated: boolean;
+  truncatedBy?: GetFunctionTruncatedBy;
   edit?: {
     content: string;
     structured: ReadFileResult;
@@ -71,6 +85,10 @@ export interface GetFunctionFileResult {
   hasParseErrors: boolean;
   matches: GetFunctionTarget[];
   missing: string[];
+  ambiguous: Array<{
+    requestedName: string;
+    candidates: string[];
+  }>;
 }
 
 export interface GetFunctionResult {
@@ -81,6 +99,7 @@ export interface GetFunctionResult {
   maxSourceChars: number;
   matchCount: number;
   missing: Array<{ relativePath: string; functionName: string }>;
+  ambiguous: Array<{ relativePath: string; requestedName: string; candidates: string[] }>;
   truncated: boolean;
 }
 
@@ -92,10 +111,17 @@ export interface CompactGetFunctionResult {
     hasParseErrors: boolean;
     matchCount: number;
     missing: string[];
+    ambiguous: Array<{ requestedName: string; candidates: string[] }>;
   }>;
   matchCount: number;
   missingCount: number;
+  ambiguousCount: number;
   truncated: boolean;
+}
+
+export interface StructuredGetFunctionOptions {
+  includeSource?: boolean;
+  includeEdit?: boolean;
 }
 
 export async function getWorkspaceFunctions(
@@ -104,7 +130,8 @@ export async function getWorkspaceFunctions(
   options: { includeEditAnchors?: boolean } = {},
 ): Promise<GetFunctionResult> {
   const paths = validatePaths(input.paths);
-  const functionNames = validateFunctionNames(input.functionNames ?? input.function_names);
+  const functionNames = validateFunctionNames(input.function_names, input.functionNames);
+  validateLookupCount(paths, functionNames);
   const contextLines = validateBoundedInteger(
     input.contextLines,
     DEFAULT_GET_FUNCTION_CONTEXT_LINES,
@@ -134,6 +161,7 @@ export async function getWorkspaceFunctions(
         sourceLineLimit,
         maxSourceChars,
         includeEditAnchors: options.includeEditAnchors ?? false,
+        requireUnique: input.requireUnique ?? false,
       }),
     );
   }
@@ -144,13 +172,14 @@ export async function getWorkspaceFunctions(
       functionName,
     })),
   );
+  const ambiguous = files.flatMap((file) =>
+    file.ambiguous.map((entry) => ({
+      relativePath: file.relativePath,
+      requestedName: entry.requestedName,
+      candidates: entry.candidates,
+    })),
+  );
   const matchCount = files.reduce((count, file) => count + file.matches.length, 0);
-
-  if (matchCount === 0) {
-    throw new GetFunctionError(
-      `None of the requested functions (${functionNames.join(", ")}) were found in ${paths.join(", ")}.`,
-    );
-  }
 
   return {
     files,
@@ -160,6 +189,7 @@ export async function getWorkspaceFunctions(
     maxSourceChars,
     matchCount,
     missing,
+    ambiguous,
     truncated: files.some((file) => file.matches.some((match) => match.truncated)),
   };
 }
@@ -177,16 +207,22 @@ export function formatGetFunctionCompact(
         `${file.relativePath}::${match.qualifiedName}`,
         match.kind,
         formatLineRange(match.location),
-        match.signature ? `sig:${trimInline(match.signature)}` : "",
-        `hash:${match.sourceHash}`,
-        match.containsParseErrors ? "parse:err" : "parse:ok",
-        match.truncated ? "trunc" : "",
+        match.matchType === "suffix" ? `req:${match.requestedName}` : "",
+        match.signature ? `sig:${trimSignatureForHeader(match.signature)}` : "",
+        view === "edit" ? `body:${match.bodyHash}` : "",
+        view === "edit" ? `view:${match.viewHash}` : "",
+        match.containsParseErrors ? "parse:err" : "",
+        match.truncated ? `trunc${match.truncatedBy ? `:${match.truncatedBy}` : ""}` : "",
       ].filter(Boolean).join(" | ");
       sections.push(`${header}\n${view === "edit" && match.edit ? match.edit.content : match.source}`);
     }
 
     if (file.missing.length > 0) {
       sections.push(`${file.relativePath}::missing ${file.missing.join(", ")}`);
+    }
+
+    for (const ambiguous of file.ambiguous) {
+      sections.push(`${file.relativePath}::ambiguous ${ambiguous.requestedName} -> ${ambiguous.candidates.join(", ")}`);
     }
   }
 
@@ -205,10 +241,32 @@ export function compactGetFunctionResult(
       hasParseErrors: file.hasParseErrors,
       matchCount: file.matches.length,
       missing: file.missing,
+      ambiguous: file.ambiguous,
     })),
     matchCount: result.matchCount,
     missingCount: result.missing.length,
+    ambiguousCount: result.ambiguous.length,
     truncated: result.truncated,
+  };
+}
+
+export function structuredGetFunctionResult(
+  result: GetFunctionResult,
+  options: StructuredGetFunctionOptions = {},
+): Record<string, unknown> {
+  return {
+    ...result,
+    files: result.files.map((file) => ({
+      ...file,
+      matches: file.matches.map((match) => {
+        const { source, edit, ...metadata } = match;
+        return {
+          ...metadata,
+          ...(options.includeSource ? { source } : {}),
+          ...(options.includeEdit ? { edit } : {}),
+        };
+      }),
+    })),
   };
 }
 
@@ -221,22 +279,24 @@ async function extractFunctionsFromFile(
     sourceLineLimit: number;
     maxSourceChars: number;
     includeEditAnchors: boolean;
+    requireUnique: boolean;
   },
 ): Promise<GetFunctionFileResult> {
-  const source = await fs.readFile(file.path, "utf8");
-  const lines = splitLines(source);
-  const entries = flattenTargetEntries(file.entries);
+  const source = await readValidatedSource(context, file.path);
+  const lines = splitLines(source.text);
+  const entries = collapseOverloadDeclarations(flattenTargetEntries(file.entries), source.text);
   const matches: GetFunctionTarget[] = [];
   const missing: string[] = [];
+  const ambiguous: GetFunctionFileResult["ambiguous"] = [];
 
   for (const requestedName of functionNames) {
-    const candidates = entries.filter((entry) => matchesRequestedName(entry, requestedName));
+    const { candidates, matchType } = findCandidates(entries, requestedName);
     if (candidates.length === 0) {
       missing.push(requestedName);
       continue;
     }
 
-    if (candidates.length > 1) {
+    if (options.requireUnique && candidates.length > 1) {
       throw new GetFunctionError(
         `Function name '${requestedName}' is ambiguous in ${file.relativePath}. Matches: ${candidates
           .map((candidate) => candidate.qualifiedName)
@@ -244,9 +304,18 @@ async function extractFunctionsFromFile(
       );
     }
 
-    matches.push(
-      await buildFunctionTarget(context, file, candidates[0], requestedName, lines, options),
-    );
+    if (candidates.length > 1) {
+      ambiguous.push({
+        requestedName,
+        candidates: candidates.map((candidate) => candidate.qualifiedName),
+      });
+    }
+
+    for (const candidate of candidates) {
+      matches.push(
+        await buildFunctionTarget(context, file, candidate, requestedName, matchType, source.text, lines, options),
+      );
+    }
   }
 
   return {
@@ -257,6 +326,7 @@ async function extractFunctionsFromFile(
     hasParseErrors: file.hasParseErrors,
     matches,
     missing,
+    ambiguous,
   };
 }
 
@@ -265,6 +335,8 @@ async function buildFunctionTarget(
   file: FileSkeletonEntry,
   entry: SkeletonEntry,
   requestedName: string,
+  matchType: GetFunctionMatchType,
+  rawText: string,
   lines: string[],
   options: {
     contextLines: number;
@@ -273,16 +345,16 @@ async function buildFunctionTarget(
     includeEditAnchors: boolean;
   },
 ): Promise<GetFunctionTarget> {
-  const sourceStartLine = Math.max(1, entry.location.startLine - options.contextLines);
-  const sourceEndLine = Math.min(lines.length, entry.location.endLine + options.contextLines);
+  const displayRange = getDisplayRange(entry.location, lines.length, options.contextLines, options.sourceLineLimit);
+  const sourceStartLine = displayRange.startLine;
+  const sourceEndLine = displayRange.endLine;
   const selected = capLinesAndChars(
     lines.slice(sourceStartLine - 1, sourceEndLine),
     sourceStartLine,
-    options.sourceLineLimit,
     options.maxSourceChars,
   );
   const source = selected.lines.map((line, index) => `${(sourceStartLine + index).toString(36)}|${line}`).join("\n");
-  const rawSource = selected.lines.join("\n");
+  const viewText = selected.lines.join("\n");
   const edit = options.includeEditAnchors
     ? await readWorkspaceFiles(context, {
         paths: [file.path],
@@ -300,16 +372,21 @@ async function buildFunctionTarget(
     kind: entry.kind as "function" | "method",
     signature: entry.signature,
     signatureTruncated: entry.signatureTruncated,
+    matchType,
     location: entry.location,
     containsParseErrors: entry.containsParseErrors,
-    sourceHash: contentHash(rawSource),
+    bodyHash: contentHash(Buffer.from(rawText, "utf8").subarray(entry.location.startByte, entry.location.endByte).toString("utf8")),
+    viewHash: contentHash(viewText),
     source: selected.truncated ? `${source}\n[get_function source truncated]` : source,
     sourceStartLine,
     sourceEndLine: sourceStartLine + selected.lines.length - 1,
     sourceLineCount: selected.lines.length,
     contextLinesBefore: entry.location.startLine - sourceStartLine,
     contextLinesAfter: Math.max(0, sourceStartLine + selected.lines.length - 1 - entry.location.endLine),
-    truncated: selected.truncated,
+    truncated: displayRange.truncated || selected.truncated,
+    ...(combineTruncatedBy(displayRange.truncated ? "lines" : undefined, selected.truncated ? "chars" : undefined)
+      ? { truncatedBy: combineTruncatedBy(displayRange.truncated ? "lines" : undefined, selected.truncated ? "chars" : undefined) }
+      : {}),
     ...(edit
       ? {
           edit: {
@@ -328,33 +405,77 @@ function flattenTargetEntries(entries: SkeletonEntry[]): SkeletonEntry[] {
   ]);
 }
 
-function matchesRequestedName(entry: SkeletonEntry, requestedName: string): boolean {
+function findCandidates(entries: SkeletonEntry[], requestedName: string): { candidates: SkeletonEntry[]; matchType: GetFunctionMatchType } {
   const normalizedRequest = requestedName.replace(/::/gu, ".").trim();
-  const normalizedQualifiedName = entry.qualifiedName.replace(/::/gu, ".");
-  return normalizedQualifiedName === normalizedRequest || normalizedQualifiedName.endsWith(`.${normalizedRequest}`);
+  const exact = entries.filter((entry) => entry.qualifiedName.replace(/::/gu, ".") === normalizedRequest);
+  if (exact.length > 0) {
+    return { candidates: exact, matchType: "exact" };
+  }
+
+  return {
+    candidates: entries.filter((entry) => entry.qualifiedName.replace(/::/gu, ".").endsWith(`.${normalizedRequest}`)),
+    matchType: "suffix",
+  };
+}
+
+function collapseOverloadDeclarations(entries: SkeletonEntry[], source: string): SkeletonEntry[] {
+  const grouped = new Map<string, SkeletonEntry[]>();
+  for (const entry of entries) {
+    const group = grouped.get(entry.qualifiedName);
+    if (group) {
+      group.push(entry);
+    } else {
+      grouped.set(entry.qualifiedName, [entry]);
+    }
+  }
+
+  return Array.from(grouped.values()).flatMap((group) => {
+    if (group.length <= 1) {
+      return group;
+    }
+
+    const implementations = group.filter((entry) => hasImplementation(entry, source));
+    return implementations.length > 0 ? implementations : group;
+  });
+}
+
+function hasImplementation(entry: SkeletonEntry, source: string): boolean {
+  const text = Buffer.from(source, "utf8").subarray(entry.location.startByte, entry.location.endByte).toString("utf8");
+  return /\{|=>/u.test(text);
+}
+
+function getDisplayRange(
+  location: SourceLocation,
+  totalLines: number,
+  contextLines: number,
+  sourceLineLimit: number,
+): { startLine: number; endLine: number; truncated: boolean } {
+  const bodyLineCount = Math.max(0, location.endLine - location.startLine + 1);
+  const selectedBodyLineCount = Math.min(bodyLineCount, sourceLineLimit);
+  const bodyEndLine = location.startLine + selectedBodyLineCount - 1;
+  const remaining = Math.max(0, sourceLineLimit - selectedBodyLineCount);
+  const before = Math.min(contextLines, remaining, location.startLine - 1);
+  const after = Math.min(contextLines, remaining - before, totalLines - bodyEndLine);
+
+  return {
+    startLine: Math.max(1, location.startLine - before),
+    endLine: Math.min(totalLines, bodyEndLine + after),
+    truncated: bodyLineCount > selectedBodyLineCount,
+  };
 }
 
 function capLinesAndChars(
   lines: string[],
   startLine: number,
-  sourceLineLimit: number,
   maxSourceChars: number,
 ): { lines: string[]; truncated: boolean } {
-  const cappedLines = lines.slice(0, sourceLineLimit);
   const selected: string[] = [];
   let remainingChars = maxSourceChars;
-  let truncated = cappedLines.length < lines.length;
+  let truncated = false;
 
-  for (const line of cappedLines) {
+  for (const line of lines) {
     const prefixLength = `${(startLine + selected.length).toString(36)}|`.length + 1;
-    const lineBudget = remainingChars - prefixLength;
-    if (lineBudget <= 0) {
-      truncated = true;
-      break;
-    }
-
-    if (line.length > lineBudget) {
-      selected.push(line.slice(0, lineBudget));
+    if (line.length + prefixLength > remainingChars) {
       truncated = true;
       break;
     }
@@ -367,6 +488,16 @@ function capLinesAndChars(
     lines: selected,
     truncated,
   };
+}
+
+function combineTruncatedBy(
+  lines: "lines" | undefined,
+  chars: "chars" | undefined,
+): GetFunctionTruncatedBy | undefined {
+  if (lines && chars) {
+    return "lines+chars";
+  }
+  return lines ?? chars;
 }
 
 function splitLines(text: string): string[] {
@@ -389,6 +520,15 @@ function trimInline(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
+function trimSignatureForHeader(value: string): string {
+  const inline = trimInline(value);
+  if (inline.length <= MAX_COMPACT_SIGNATURE_CHARS) {
+    return inline;
+  }
+
+  return `${inline.slice(0, MAX_COMPACT_SIGNATURE_CHARS - 3).trimEnd()}...`;
+}
+
 function validatePaths(paths: unknown): string[] {
   if (!Array.isArray(paths) || paths.length === 0) {
     throw new GetFunctionError("paths must be a non-empty array of strings.");
@@ -402,17 +542,35 @@ function validatePaths(paths: unknown): string[] {
   });
 }
 
-function validateFunctionNames(functionNames: unknown): string[] {
+function validateFunctionNames(function_names: unknown, functionNamesAlias: unknown): string[] {
+  if (function_names !== undefined && functionNamesAlias !== undefined) {
+    const canonical = JSON.stringify(function_names);
+    const alias = JSON.stringify(functionNamesAlias);
+    if (canonical !== alias) {
+      throw new GetFunctionError("function_names and functionNames were both provided with different values.");
+    }
+  }
+
+  const functionNames = function_names ?? functionNamesAlias;
   if (!Array.isArray(functionNames) || functionNames.length === 0) {
-    throw new GetFunctionError("functionNames must be a non-empty array of strings.");
+    throw new GetFunctionError("function_names must be a non-empty array of strings.");
   }
 
   return functionNames.map((functionName) => {
     if (typeof functionName !== "string" || !functionName.trim()) {
-      throw new GetFunctionError("functionNames must contain only non-empty strings.");
+      throw new GetFunctionError("function_names must contain only non-empty strings.");
     }
     return functionName;
   });
+}
+
+function validateLookupCount(paths: string[], functionNames: string[]): void {
+  const lookupCount = paths.length * functionNames.length;
+  if (lookupCount > MAX_GET_FUNCTION_LOOKUPS) {
+    throw new GetFunctionError(
+      `get_function request is too broad: ${lookupCount} path/function lookups exceeds the limit of ${MAX_GET_FUNCTION_LOOKUPS}.`,
+    );
+  }
 }
 
 function validateBoundedInteger(
@@ -425,7 +583,7 @@ function validateBoundedInteger(
     return defaultValue;
   }
 
-  const minimum = name === "contextLines" ? 0 : 1;
+  const minimum = name === "contextLines" ? 0 : name === "maxSourceChars" ? MIN_GET_FUNCTION_SOURCE_CHARS : 1;
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < minimum) {
     throw new GetFunctionError(
       `${name} must be a ${minimum === 0 ? "non-negative" : "positive"} integer when provided.`,
@@ -433,4 +591,88 @@ function validateBoundedInteger(
   }
 
   return Math.min(value, maxValue);
+}
+
+async function readValidatedSource(context: RuntimeContext, filePath: string): Promise<{ text: string; resolved: ResolvedWorkspacePath }> {
+  const resolved = resolveWorkspacePath(context, filePath);
+  const stat = await statPath(resolved);
+
+  if (stat.isSymbolicLink()) {
+    throw new GetFunctionError(`Path '${resolved.inputPath}' is a symbolic link and will not be followed.`);
+  }
+
+  if (!stat.isFile()) {
+    throw new GetFunctionError(`Path '${resolved.inputPath}' is not a regular file.`);
+  }
+
+  await assertRealPathInsideWorkspace(resolved);
+
+  if (stat.size > MAX_FILE_SKELETON_BYTES) {
+    throw new GetFunctionError(
+      `Path '${resolved.inputPath}' exceeds the ${MAX_FILE_SKELETON_BYTES_LABEL} get_function parse safety cap.`,
+    );
+  }
+
+  const buffer = await fs.readFile(resolved.absolutePath);
+  if (isBinaryLooking(buffer)) {
+    throw new GetFunctionError(`Path '${resolved.inputPath}' appears to be binary or unsupported text.`);
+  }
+
+  const decoder = new StringDecoder("utf8");
+  const text = decoder.write(buffer) + decoder.end();
+  if (stat.size > 0 && text.includes("\uFFFD")) {
+    throw new GetFunctionError(`Path '${resolved.inputPath}' is not valid UTF-8 text.`);
+  }
+
+  return { text, resolved };
+}
+
+async function statPath(resolved: ResolvedWorkspacePath): Promise<Stats> {
+  try {
+    return await fs.lstat(resolved.absolutePath);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new GetFunctionError(`Path '${resolved.inputPath}' does not exist.`);
+    }
+
+    throw new GetFunctionError(`Unable to inspect path '${resolved.inputPath}': ${getErrorMessage(error)}`);
+  }
+}
+
+async function assertRealPathInsideWorkspace(resolved: ResolvedWorkspacePath): Promise<void> {
+  let realPath: string;
+  try {
+    realPath = await fs.realpath(resolved.absolutePath);
+  } catch (error) {
+    throw new GetFunctionError(`Unable to resolve path '${resolved.inputPath}': ${getErrorMessage(error)}`);
+  }
+
+  if (!isPathInside(resolved.workspaceRoot, realPath)) {
+    throw new GetFunctionError(`Path '${resolved.inputPath}' resolves outside the configured workspace roots.`);
+  }
+}
+
+function isBinaryLooking(buffer: Buffer): boolean {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+  if (sample.includes(0)) {
+    return true;
+  }
+
+  let controlBytes = 0;
+  for (const byte of sample) {
+    const allowedControl = byte === 9 || byte === 10 || byte === 12 || byte === 13;
+    if (byte < 32 && !allowedControl) {
+      controlBytes++;
+    }
+  }
+
+  return sample.length > 0 && controlBytes / sample.length > 0.05;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
