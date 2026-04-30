@@ -4,8 +4,12 @@
 )
 
 (
-  (function_declaration
-    name: (identifier) @name.definition.function) @definition.function
+  [
+    (function_declaration
+      name: (identifier) @name.definition.function)
+    (generator_function_declaration
+      name: (identifier) @name.definition.function)
+  ] @definition.function
 )
 
 (
@@ -15,7 +19,7 @@
 
 (
   (method_definition
-    name: [(property_identifier) (identifier)] @name.definition.method) @definition.method
+    name: [(property_identifier) (identifier) (private_property_identifier) (computed_property_name)] @name.definition.method) @definition.method
 )
 
 (
@@ -57,26 +61,26 @@
   (lexical_declaration
     (variable_declarator
       name: (identifier) @name.definition.function
-      value: [(arrow_function) (function_expression)])) @definition.function
+      value: [(arrow_function) (function_expression) (generator_function)])) @definition.function
 )
 
 (
   (variable_declaration
     (variable_declarator
       name: (identifier) @name.definition.function
-      value: [(arrow_function) (function_expression)])) @definition.function
+      value: [(arrow_function) (function_expression) (generator_function)])) @definition.function
 )
 
 (
   (pair
-    key: [(property_identifier) (identifier)] @name.definition.method
+    key: [(property_identifier) (identifier) (computed_property_name)] @name.definition.method
     value: [(arrow_function) (function_expression)]) @definition.method
 )
 
 (
   (public_field_definition
-    name: [(property_identifier) (identifier)] @name.definition.method
-    value: [(arrow_function) (function_expression)]) @definition.method
+    name: [(property_identifier) (identifier) (private_property_identifier) (computed_property_name)] @name.definition.method
+    value: [(arrow_function) (function_expression) (generator_function)]) @definition.method
 )
 
 (identifier) @name.reference

@@ -40,7 +40,7 @@ describe("compact MCP payload contracts", () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   });
 
-  it("keeps compact structuredContent summary-only for default views", async () => {
+  it("keeps compact structuredContent bounded for default views", async () => {
     const list = await listWorkspaceFiles(context, { paths: ["."], recursive: true });
     const search = await searchWorkspaceFiles(context, { paths: ["."], regex: "searchable" });
     const read = await readWorkspaceFiles(context, { paths: ["src/file.tsx"], includeAnchors: false });
@@ -54,7 +54,7 @@ describe("compact MCP payload contracts", () => {
       ["read_file read", compactReadFileResult(read, { includeAnchors: false }), 260],
       ["get_file_skeleton outline", compactFileSkeletonResult(skeleton, { view: "outline" }), 240],
       ["get_file_skeleton signatures", compactFileSkeletonResult(skeleton, { view: "signatures" }), 240],
-      ["get_function source", compactGetFunctionResult(functions), 240],
+      ["get_function source", compactGetFunctionResult(functions), 420],
     ] as const;
 
     for (const [name, structuredContent, maxJsonChars] of cases) {
@@ -63,7 +63,9 @@ describe("compact MCP payload contracts", () => {
       expect(json, name).not.toContain("path\":\"");
       expect(json, name).not.toContain("lines");
       expect(json, name).not.toContain("entries\":[");
-      expect(json, name).not.toContain("matches\":[");
+      if (name !== "get_function source") {
+        expect(json, name).not.toContain("matches\":[");
+      }
     }
   });
 

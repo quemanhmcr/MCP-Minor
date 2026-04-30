@@ -7,6 +7,7 @@ import {
   formatGetFunctionCompact,
   getWorkspaceFunctions,
 } from "../src/filesystem/get-function.js";
+import { formatReadFileResult, readWorkspaceFiles } from "../src/filesystem/read-file.js";
 import type { RuntimeContext } from "../src/runtime/context.js";
 
 describe("getWorkspaceFunctions", () => {
@@ -163,6 +164,7 @@ describe("getWorkspaceFunctions", () => {
     expect(result.truncated).toBe(true);
     expect(result.files[0].matches[0].source).toContain("[get_function source truncated]");
     expect(result.files[0].matches[0].truncatedBy).toBe("lines+chars");
+    expect(formatGetFunctionCompact(result)).toContain("trunc:lines+chars");
   });
 
   it("keeps default context at zero and hashes exact body separately from returned view", async () => {
@@ -206,6 +208,83 @@ describe("getWorkspaceFunctions", () => {
     });
   });
 
+  it("matches names using Unicode NFC normalization without normalizing hash input", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "normalized.ts"),
+      "export function café() {\n  return 'nfc';\n}\n",
+    );
+
+    const nfc = await getWorkspaceFunctions(context, {
+      paths: ["src/normalized.ts"],
+      function_names: ["café"],
+    });
+    const nfd = await getWorkspaceFunctions(context, {
+      paths: ["src/normalized.ts"],
+      function_names: ["cafe\u0301"],
+    });
+
+    expect(nfd.matchCount).toBe(1);
+    expect(nfd.files[0].matches[0]).toMatchObject({ qualifiedName: "café", matchType: "exact" });
+    expect(nfd.files[0].matches[0].bodyHash).toBe(nfc.files[0].matches[0].bodyHash);
+  });
+
+  it("proves get_function reaches supported skeleton function and method forms", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "kinds.ts"),
+      [
+        "function dec(_target: unknown, _key?: string) {}",
+        "const arrow = () => 1;",
+        "const object = {",
+        "  shorthand() { return 2; },",
+        "  *objectGenerator() { yield 3; },",
+        "  get value() { return 4; },",
+        "  set value(next: number) { void next; },",
+        "  [Symbol.iterator]() { return [][Symbol.iterator](); },",
+        "};",
+        "export default function() { return 5; }",
+        "class Box {",
+        "  constructor(readonly value: number) {}",
+        "  #secret() { return this.value; }",
+        "  @dec",
+        "  decorated() { return this.#secret(); }",
+        "  *classGenerator() { yield this.value; }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await getWorkspaceFunctions(context, {
+      paths: ["src/kinds.ts"],
+      function_names: [
+        "arrow",
+        "shorthand",
+        "objectGenerator",
+        "value",
+        "[Symbol.iterator]",
+        "default",
+        "Box.constructor",
+        "Box.#secret",
+        "Box.decorated",
+        "Box.classGenerator",
+      ],
+    });
+    const byName = new Map(result.files[0].matches.map((match) => [match.qualifiedName, match]));
+
+    expect(result.missing).toEqual([]);
+    expect(result.matchCount).toBeGreaterThanOrEqual(10);
+    expect(byName.get("arrow")).toMatchObject({ kind: "function" });
+    expect(byName.get("shorthand")).toMatchObject({ kind: "method" });
+    expect(byName.get("objectGenerator")).toMatchObject({ kind: "method" });
+    expect(result.files[0].matches.filter((match) => match.qualifiedName === "value")).toHaveLength(2);
+    expect(byName.get("[Symbol.iterator]")).toMatchObject({ kind: "method" });
+    expect(byName.get("default")).toMatchObject({ kind: "function" });
+    expect(byName.get("Box.constructor")).toMatchObject({ kind: "method" });
+    expect(byName.get("Box.#secret")).toMatchObject({ kind: "method" });
+    expect(byName.get("Box.decorated")).toMatchObject({ kind: "method", sourceStartLine: 14 });
+    expect(byName.get("Box.decorated")?.source).toContain("e|  @dec");
+    expect(byName.get("Box.classGenerator")).toMatchObject({ kind: "method" });
+  });
+
   it("collapses TypeScript overload signatures to the implementation", async () => {
     await fs.writeFile(
       path.join(workspaceRoot, "src", "overloads.ts"),
@@ -228,6 +307,53 @@ describe("getWorkspaceFunctions", () => {
     expect(result.files[0].matches[0].source).toContain("3|export function parse(value: string | number): string {");
   });
 
+  it("leaves ambient overload signatures when no implementation exists and accepts implementation-first groups", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "overload-edges.ts"),
+      [
+        "declare function ambient(value: string): string;",
+        "declare function ambient(value: number): string;",
+        "function first(value: string | number): string {",
+        "  return String(value);",
+        "}",
+        "function first(value: string): string;",
+        "function first(value: number): string;",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await getWorkspaceFunctions(context, {
+      paths: ["src/overload-edges.ts"],
+      function_names: ["ambient", "first"],
+    });
+
+    expect(result.files[0].matches.filter((match) => match.qualifiedName === "ambient")).toHaveLength(2);
+    expect(result.files[0].matches.filter((match) => match.qualifiedName === "first")).toHaveLength(1);
+    expect(result.files[0].matches.find((match) => match.qualifiedName === "first")?.source).toContain("3|function first");
+  });
+
+  it("makes get_function edit output byte-identical to read_file edit for the returned range", async () => {
+    const result = await getWorkspaceFunctions(
+      context,
+      {
+        paths: ["src/sample.ts"],
+        function_names: ["Greeter.getName"],
+        contextLines: 1,
+      },
+      { includeEditAnchors: true },
+    );
+    const match = result.files[0].matches[0];
+    const read = await readWorkspaceFiles(context, {
+      paths: ["src/sample.ts"],
+      startLine: match.sourceStartLine,
+      endLine: match.sourceEndLine,
+      lineLimit: match.sourceLineCount,
+      includeAnchors: true,
+    });
+
+    expect(match.edit?.content).toBe(formatReadFileResult(read, { includeAnchors: true }));
+  });
+
   it("surfaces file safety errors from the AST loader and get_function revalidation", async () => {
     await fs.writeFile(path.join(workspaceRoot, "README.md"), "# readme\n");
 
@@ -240,12 +366,26 @@ describe("getWorkspaceFunctions", () => {
   });
 
   it("caps overly broad path/function lookup requests", async () => {
+    const manyNames = Array.from({ length: 199 }, (_, index) => `fn${index}`);
+    const broadMisses = await getWorkspaceFunctions(context, {
+      paths: ["src/sample.ts"],
+      function_names: manyNames,
+    });
+    expect(broadMisses.missing).toHaveLength(199);
+
+    await expect(
+      getWorkspaceFunctions(context, {
+        paths: ["src/sample.ts"],
+        function_names: Array.from({ length: 201 }, (_, index) => `fn${index}`),
+      }),
+    ).rejects.toThrow("too many function names");
+
     await expect(
       getWorkspaceFunctions(context, {
         paths: ["src/sample.ts", "src/sample.ts"],
-        function_names: Array.from({ length: 101 }, (_, index) => `fn${index}`),
+        function_names: manyNames,
       }),
-    ).rejects.toThrow("path/function lookups exceeds the limit");
+    ).rejects.toThrow("result is too broad");
   });
 });
 

@@ -63,6 +63,16 @@ describe("get_function MCP tool", () => {
             relativePath: "src/file.ts",
             language: "typescript",
             hasParseErrors: false,
+            matches: [
+              {
+                requestedName: "Worker.run",
+                qualifiedName: "Worker.run",
+                kind: "method",
+                matchType: "exact",
+                startLine: 2,
+                endLine: 4,
+              },
+            ],
             matchCount: 1,
             missing: [],
             ambiguous: [],

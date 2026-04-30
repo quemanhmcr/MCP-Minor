@@ -6,7 +6,9 @@ import {
   DEFAULT_GET_FUNCTION_SOURCE_CHARS,
   DEFAULT_GET_FUNCTION_SOURCE_LINE_LIMIT,
   MAX_GET_FUNCTION_CONTEXT_LINES,
-  MAX_GET_FUNCTION_LOOKUPS,
+  MAX_GET_FUNCTION_NAMES,
+  MAX_GET_FUNCTION_PATHS,
+  MAX_GET_FUNCTION_RESULT_ITEMS,
   MAX_GET_FUNCTION_SOURCE_CHARS,
   MAX_GET_FUNCTION_SOURCE_LINE_LIMIT,
   MIN_GET_FUNCTION_SOURCE_CHARS,
@@ -56,12 +58,26 @@ const getFunctionTargetSchema = z.object({
     .optional(),
 });
 
+const compactGetFunctionTargetSchema = z.object({
+  requestedName: z.string(),
+  name: z.string(),
+  qualifiedName: z.string(),
+  kind: z.enum(["function", "method"]),
+  matchType: z.enum(["exact", "suffix"]),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  truncated: z.boolean(),
+  truncatedBy: z.enum(["lines", "chars", "lines+chars"]).optional(),
+});
+
 export const getFunctionInputSchema = {
   paths: z.array(z.string().min(1)).min(1).describe("JavaScript or TypeScript source files to inspect."),
   function_names: z
     .array(z.string().min(1))
     .min(1)
-    .describe(`Exact or suffix-qualified function names, such as buildName or Worker.run. paths.length * function_names.length must be <= ${MAX_GET_FUNCTION_LOOKUPS}.`),
+    .describe(
+      `Exact or suffix-qualified function names, such as buildName, Worker.run, #privateMethod, default, or [Symbol.iterator]. Up to ${MAX_GET_FUNCTION_NAMES} names per request; result items are capped at ${MAX_GET_FUNCTION_RESULT_ITEMS}.`,
+    ),
   contextLines: z
     .number()
     .int()
@@ -100,7 +116,7 @@ export const getFunctionOutputSchema = {
       language: z.enum(["javascript", "typescript", "tsx"]),
       sourceLineCount: z.number().int().nonnegative().optional(),
       hasParseErrors: z.boolean(),
-      matches: z.array(getFunctionTargetSchema).optional(),
+      matches: z.union([z.array(getFunctionTargetSchema), z.array(compactGetFunctionTargetSchema)]).optional(),
       matchCount: z.number().int().nonnegative().optional(),
       missing: z.array(z.string()),
       ambiguous: z.array(z.object({ requestedName: z.string(), candidates: z.array(z.string()) })).optional(),
@@ -125,7 +141,7 @@ export function registerGetFunctionTool(server: McpServer, context: RuntimeConte
     {
       title: "Get function",
       description:
-        "Extract targeted JavaScript or TypeScript function/method implementations from source files. Matches exact qualified names first, then suffix names; ambiguous suffix matches return all candidates unless requireUnique is true. Defaults to compact bounded source; use view: \"full\" for structured metadata or view: \"edit\" for edit-ready anchors.",
+        `Extract targeted JavaScript or TypeScript function/method implementations from up to ${MAX_GET_FUNCTION_PATHS} source files. Matching normalizes :: to ., trims whitespace, and compares names as Unicode NFC. Exact qualified names win first; if none match, suffix-qualified names are accepted. Ambiguous suffix matches return all candidates unless requireUnique is true. TypeScript overload declarations with an implementation are collapsed to the implementation. Address anonymous default exports as default, private methods as #name, and computed methods by their bracket text such as [Symbol.iterator]. Defaults to compact bounded source; use view: "full" for structured metadata or view: "edit" for edit-ready anchors.`,
       inputSchema: getFunctionInputSchema,
       outputSchema: getFunctionOutputSchema,
       annotations: {

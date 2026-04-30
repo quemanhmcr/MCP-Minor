@@ -1,6 +1,6 @@
 (
   (method_definition
-    name: [(property_identifier) (identifier)] @name.definition.method) @definition.method
+    name: [(property_identifier) (identifier) (private_property_identifier) (computed_property_name)] @name.definition.method) @definition.method
 )
 
 (
@@ -26,11 +26,11 @@
     (lexical_declaration
       (variable_declarator
         name: (identifier) @name.definition.function
-        value: [(arrow_function) (function_expression)]))
+        value: [(arrow_function) (function_expression) (generator_function)]))
     (variable_declaration
       (variable_declarator
         name: (identifier) @name.definition.function
-        value: [(arrow_function) (function_expression)]))
+        value: [(arrow_function) (function_expression) (generator_function)]))
   ] @definition.function
 )
 
