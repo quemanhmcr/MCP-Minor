@@ -5,9 +5,9 @@ This file is the live operational state for coding-agent sessions. It contains c
 ## TL;DR
 
 - Branch: `main`; upstream `dirac/` submodule pinned at `e827ec30d4cdae078588df2040f203b780d657ad`.
-- Production-ready tools: `list_files`, `search_files`, `read_file`, `edit_file`, `get_file_skeleton`.
+- Production-ready tools: `list_files`, `search_files`, `read_file`, `edit_file`, `get_file_skeleton`, `get_function`.
 - Current output contract: compact task-oriented `view` defaults; `view: "full"` for rich JSON; legacy `format` aliases remain.
-- Next recommended implementation task: port `get_function`.
+- Next recommended implementation task: audit `.diracignore` needs or plan symbol index persistence.
 - Generated artifacts must stay out of git; remove `mcp-server/dist/` after builds.
 
 ## Working Discipline
@@ -87,7 +87,7 @@ A tool may be marked `production-ready` only when all apply:
 | `read_file` | production-ready | UTF-8 text/code | no rich extraction for PDF/DOCX/XLSX/notebooks/images | medium |
 | `edit_file` | production-ready | UTF-8 text/code | single-file replace-only, no insert/end-anchor/multi-file batching | medium |
 | `get_file_skeleton` | production-ready | JS/TS/JSX/TSX | no call graph comments, no non-JS/TS languages | medium |
-| `get_function` | not-started | planned JS/TS/JSX/TSX | needs range lookup, output views, optional edit anchors, tests | medium |
+| `get_function` | production-ready | JS/TS/JSX/TSX | no symbol index, references, overload grouping, or non-JS/TS languages | medium |
 | `find_symbol_references` | not-started | undecided | needs symbol index and persistence decision | high |
 | `replace_symbol` | not-started | undecided | needs AST range resolution and mutation model | high |
 | `rename_symbol` | not-started | undecided | needs symbol index and multi-file diff/reporting | high |
@@ -157,10 +157,12 @@ Measured on 2026-04-30 with `npm run measure:output-size`. True MCP-visible size
 | `read_file view:"edit"` on same file | 28,955 | 36,943 | 379,452 | 1.276x raw / 0.097x full |
 | `get_file_skeleton view:"outline"` on same file | 28,955 | 2,872 | 72,100 | 0.099x raw / 0.040x full |
 | `get_file_skeleton view:"signatures"` on same file | 28,955 | 9,121 | 72,100 | 0.315x raw / 0.127x full |
+| `get_function view:"source"` for `getWorkspaceFileSkeleton` in same file | 28,955 | 995 | 3,454 | 0.034x raw / 0.288x full |
+| `get_function view:"edit"` for same target | 28,955 | 1,154 | 3,454 | 0.040x raw / 0.334x full |
 | React/TSX generic fixture signatures | 2,511 | 1,752 | 11,294 | 0.698x raw / 0.155x full |
-| `search_files view:"matches"` over `mcp-server/src/**/*.ts` | n/a | 10,913 | 84,924 | 0.129x full |
-| `search_files view:"files"` over same query | n/a | 1,429 | 84,924 | 0.017x full |
-| `list_files view:"outline"` on `mcp-server/src` | n/a | 1,093 | 9,114 | 0.120x full |
+| `search_files view:"matches"` over `mcp-server/src/**/*.ts` | n/a | 10,979 | 85,178 | 0.129x full |
+| `search_files view:"files"` over same query | n/a | 1,428 | 85,178 | 0.017x full |
+| `list_files view:"outline"` on `mcp-server/src` | n/a | 1,176 | 9,810 | 0.120x full |
 
 Edit workflow tax on `mcp-server/src/filesystem/file-skeleton.ts`:
 
@@ -174,11 +176,10 @@ For this file, the new workflow becomes cheaper at about seven exploratory reads
 
 ## Next Sessions
 
-1. Port `get_function`: reuse tree-sitter runtime, skeleton extraction patterns, compact output views, and real-repo smoke discipline. Design default output around targeted function context, with an explicit edit-ready view if anchors are needed.
-2. Audit `.diracignore` needs: decide whether standalone tools need project ignore files or built-in skips remain enough.
-3. Consider `edit_file` insert/end-anchor extensions: only after `get_function` clarifies range/edit workflows.
-4. Plan symbol index persistence: required before references/rename tools.
-5. Design command execution policy: required before any `execute_command` exposure.
+1. Audit `.diracignore` needs: decide whether standalone tools need project ignore files or built-in skips remain enough.
+2. Plan symbol index persistence: required before references/rename tools.
+3. Consider `edit_file` insert/end-anchor extensions only if consumers need edits outside returned line anchors.
+4. Design command execution policy: required before any `execute_command` exposure.
 
 ## Anti-Patterns
 
@@ -218,11 +219,13 @@ For this file, the new workflow becomes cheaper at about seven exploratory reads
 - 2026-04-30: Use `A` plus 6 base-36 anchor ids with retry/checking. Reason: reduces edit-view token cost while keeping session/file uniqueness invariants.
 - 2026-04-30: Measure true MCP-visible payload as content plus structuredContent JSON. Reason: many clients expose both channels to models.
 - 2026-04-30: Keep documentation split by role: README contract, tracker state, notes upstream research. Reason: prevents drift and reduces session resume cost.
+- 2026-04-30: Make `get_function` default to compact bounded source without anchors, with `view: "edit"` as the explicit edit-ready mode. Reason: targeted reads should stay cheap unless mutation is intended.
 
 ## Session Log
 
 ### Recent Sessions
 
+- 2026-04-30 - `get_function` - ported targeted JS/TS function extraction with compact/full/edit views, ambiguity and missing-target handling. Verification: `npm run build`, `npm run test`, `npm run lint`, `npm run typecheck`, built tree-sitter smoke, `npm run measure:output-size`, repo status/submodule/dist/diff checks. Next: audit `.diracignore` needs or plan symbol index persistence.
 - 2026-04-30 - docs architecture cleanup - rewrote README/TRACKER/NOTES by canonical role: contract, live state, upstream research. Next: review diffs, then port `get_function`.
 - 2026-04-30 - output view calibration - measured true MCP-visible payloads, tightened `read_file` views to 1.093x/1.276x raw, documented anchor entropy, added wrong-view edit metadata and React/TSX signature coverage. Next: `get_function`.
 - 2026-04-30 - token-efficient views - added `view` modes for all current tools, compact defaults, full JSON modes, `format` aliases, and output-size measurement. Next: calibrate defaults.
