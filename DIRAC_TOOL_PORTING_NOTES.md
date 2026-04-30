@@ -205,11 +205,13 @@ Ripgrep:
   - Accepts `paths` and optional `limit`.
   - Supports `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx` through the shared `mcp-server/src/tree-sitter/runtime.ts` runtime and MCP-owned query assets.
   - Reuses workspace/path safety helpers and rejects missing paths, directories, symlinks, symlink escapes, out-of-workspace paths, unsupported extensions, rich/binary files, invalid UTF-8, binary-looking files, and files over the 1MB parse safety cap before parsing.
-  - Returns structured JSON with per-file `path`, `relativePath`, `language`, `rootType`, `sourceLength`, `hasParseErrors`, `entryCount`, `limit`, `truncated`, and nested entries shaped as `{ kind, name, signature, location, children }`.
-  - Preserves imports, export-only statements, exported definitions, top-level functions/classes, class/interface methods, named arrow/function expressions, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
-  - Surfaces parser recovery through `hasParseErrors` instead of pretending broken source parsed cleanly.
-  - Does not emit edit anchors. Entry line/byte locations are non-edit metadata; callers must use `read_file` to obtain edit-compatible anchors before `edit_file`.
-  - Intentionally omits Dirac call graph comments, `.diracignore`, approval UI, telemetry, and all non-JS/TS languages until grammar/query assets and real-repo coverage are added.
+  - Returns structured JSON with per-file `path`, `relativePath`, `language`, `rootType`, `sourceLength`, `locationEncoding`, `hasParseErrors`, `entryCount`, `limit`, `truncated`, and nested entries shaped as `{ id, kind, name, qualifiedName, signature, signatureTruncated, location, containsParseErrors, children }`.
+  - Preserves imports, export-only statements, exported definitions, anonymous default exports, top-level functions/classes, JS/TS constructors, class/interface methods, named arrow/function expressions including multiple declarators, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
+  - Extracts signatures from tree-sitter `body` fields first, with a fallback for unusual grammar nodes, so nested default-parameter callbacks, heritage expressions, and decorator/object arguments do not truncate declaration signatures.
+  - Uses raw file text for parsing; entry locations are tree-sitter UTF-8 byte offsets plus one-based lines.
+  - Surfaces parser recovery through file-level `hasParseErrors` and entry-level `containsParseErrors` instead of pretending broken source parsed cleanly.
+  - Does not emit edit anchors. Entry ids and line/byte locations are non-edit metadata; callers must use `read_file` to obtain edit-compatible anchors before `edit_file`.
+  - Intentionally omits Dirac call graph comments, `.diracignore`, approval UI, telemetry, richer import/re-export sub-kinds, and all non-JS/TS languages until grammar/query assets and real-repo coverage are added.
 
 ## Next Likely Tool Area
 

@@ -110,11 +110,12 @@ Status: production-ready under current MCP JS/TS AST scope.
 - Accepts `paths` and optional `limit`; supported extensions are `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx`.
 - Reuses `src/tree-sitter/runtime.ts`; no second parser/runtime path.
 - Rejects unsupported extensions, missing paths, directories, symlinks, symlink escapes, out-of-workspace paths, rich/binary extensions, binary-looking files, invalid UTF-8, and files over the 1MB parse safety cap before parsing.
-- Returns structured `{ files, limit, truncated }`; each file includes absolute `path`, stable `relativePath`, `language`, `rootType`, `sourceLength`, `hasParseErrors`, `entryCount`, per-file `limit`, per-file `truncated`, and nested skeleton `entries`.
-- Skeleton entries are shaped as `{ kind, name, signature, location, children }`, with one-based line ranges and byte ranges.
-- Preserves imports, export-only statements, exported definitions, top-level functions/classes, class/interface methods, named arrow/function expressions, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
-- Parse recovery is explicit through `hasParseErrors`; syntax-error fixtures are covered.
-- Locations are non-edit metadata, not edit anchors. Use `read_file` to obtain edit-compatible anchors.
+- Returns structured `{ files, limit, truncated }`; each file includes absolute `path`, stable `relativePath`, `language`, `rootType`, `sourceLength`, `locationEncoding`, `hasParseErrors`, `entryCount`, per-file `limit`, per-file `truncated`, and nested skeleton `entries`.
+- Skeleton entries are shaped as `{ id, kind, name, qualifiedName, signature, signatureTruncated, location, containsParseErrors, children }`, with one-based line ranges and tree-sitter UTF-8 byte offsets against raw file text.
+- Preserves imports, export-only statements, exported definitions, anonymous default exports, top-level functions/classes, JS/TS constructors, class/interface methods, named arrow/function expressions including multiple declarators, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
+- Signature extraction uses tree-sitter `body` fields first so nested callback/default-parameter/heritable expression bodies do not truncate declaration signatures. A DFS fallback remains for unusual grammar nodes without a `body` field.
+- Parse recovery is explicit through file-level `hasParseErrors` and entry-level `containsParseErrors`; syntax-error fixtures are covered.
+- Entry `id` values are stable skeleton identifiers, not edit anchors. Locations are non-edit metadata. Use `read_file` to obtain edit-compatible anchors.
 
 Dirac parity:
 
@@ -123,15 +124,16 @@ Dirac parity:
 
 Real pinned Dirac smoke:
 
-- `dirac/src/services/tree-sitter/languageParser.ts`: TypeScript `program`, 5149 chars, no parse errors, 9 skeleton entries. Expected entries include `interface LanguageParser`, `function loadLanguage`, `function initializeParser`, and `function loadRequiredLanguageParsers`.
-- `dirac/src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`: TypeScript `program`, 7012 chars, no parse errors, 20 skeleton entries. Expected entries include `class GetFileSkeletonToolHandler`, `method constructor`, `method getDescription`, `method handlePartialBlock`, and `method execute`.
-- `dirac/scripts/file-utils.mjs`: JavaScript `program`, 739 chars, no parse errors, 5 skeleton entries. Expected entries include `function writeFileWithMkdirs`, `function rmrf`, and `function rmdir`.
+- `dirac/src/services/tree-sitter/languageParser.ts`: TypeScript `program`, 5333 chars, no parse errors, 9 skeleton entries. Expected entries include `interface LanguageParser`, `function loadLanguage`, `function initializeParser`, and `function loadRequiredLanguageParsers`.
+- `dirac/src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`: TypeScript `program`, 7192 chars, no parse errors, 20 skeleton entries. Expected entries include `class GetFileSkeletonToolHandler`, `method constructor`, `method getDescription`, `method handlePartialBlock`, and `method execute`.
+- `dirac/scripts/file-utils.mjs`: JavaScript `program`, 766 chars, no parse errors, 5 skeleton entries. Expected entries include `function writeFileWithMkdirs`, `function rmrf`, and `function rmdir`.
 
 Current caveats:
 
 - Imports and export-only statements are top-level structural entries; exported declarations are represented by the exported definition signature rather than a separate wrapper entry.
 - `limit` truncates entries in preorder and preserves deterministic shape, but very large files still fail at the 1MB parse safety cap.
-- Constructor handling follows the current query assets: TypeScript constructors appear as methods, while JavaScript constructors are excluded by the JavaScript query predicate.
+- Constructor handling is now consistent for JS and TS: constructors appear as method entries nested under their class.
+- Import and re-export sub-kinds remain conservative; richer `import:type`, namespace import, and re-export classification can be added later without changing the core entry model.
 
 ## Shared Tree-Sitter Runtime
 
@@ -208,7 +210,7 @@ Status meanings:
 - `search_files` structured output lacks Dirac's formatted hash-anchored lines.
 - `list_files` intentionally differs from Dirac by not returning line counts or mtimes.
 - Tree-sitter foundation currently packages JS/TS/TSX WASM and JS/TS query assets only. Additional languages need deliberate query and grammar smoke coverage before exposure.
-- `get_file_skeleton` locations are not edit anchors. Agents must use `read_file` before `edit_file`.
+- `get_file_skeleton` entry ids and locations are not edit anchors. Agents must use `read_file` before `edit_file`.
 - `get_file_skeleton` does not compute Dirac call graph comments and does not integrate `.diracignore`.
 - Tree-sitter queries are minimal `.scm` compatibility assets and are not yet full upstream Dirac parity across all languages or call-graph captures.
 - Editing tools need a headless design for direct writes, diff output, approval policy, diagnostics, and anchor drift.
@@ -275,7 +277,7 @@ Keep this short. Preserve useful history, but do not turn this tracker into a tr
 | 2026-04-29 | Harden anchored `edit_file` freshness | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added stored full-file hash snapshots to anchor state, stale hash rejection before writes, restart/reset no-anchor coverage, same-line-count external/cross-session tests, documented 1MB edit mutation cap. No new tool ported. |
 | 2026-04-29 | Surface edit mutation cap during reads | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added `read_file` edit-file compatibility metadata/warnings for files over the 1MB mutation cap and improved oversized `edit_file` error guidance. No new tool ported. |
 | 2026-04-29 | Prepare tree-sitter runtime and assets | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; built `dist` smoke against pinned Dirac files | Added exact `web-tree-sitter@0.22.6`, `tree-sitter-wasms@^0.1.13`, MCP-owned JS/TS `.scm` queries, build asset copy script, reusable parser runtime, parser tests, and built-output smoke. Smoke: `dirac/src/services/tree-sitter/languageParser.ts` TypeScript `program`, 5333 chars, no parse errors; `dirac/scripts/file-utils.mjs` JavaScript `program`, 766 chars, no parse errors; all assets loaded from `dist`. No MCP tree-sitter tool ported. Follow-up hardening removed cwd-relative package lookup, removed empty asset-root trick, added process-global init guard, simplified query cache keys, stopped exposing mutable parser instances, and added tree disposal/test coverage. |
-| 2026-04-29 | Port AST-backed `get_file_skeleton` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; built `dist` smoke against pinned Dirac files | Added safe file loading, structured skeleton extraction, MCP registration, hard fixture tests, MCP in-memory smoke, real Dirac repo smoke, and docs. Real smoke: `languageParser.ts` 5149 chars/9 entries/no parse errors; `GetFileSkeletonToolHandler.ts` 7012 chars/20 entries/no parse errors; `file-utils.mjs` 739 chars/5 entries/no parse errors. Locations are non-edit metadata; use `read_file` for anchors. |
+| 2026-04-29 | Port AST-backed `get_file_skeleton` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; built `dist` smoke against pinned Dirac files | Added safe file loading, structured skeleton extraction, MCP registration, hard fixture tests, MCP in-memory smoke, real Dirac repo smoke, and docs. Follow-up hardening added stable entry ids, qualified names, anonymous default exports, JS/TS constructor parity, body-field signature extraction, raw UTF-8 byte offsets, signature truncation flags, and per-entry parse-error metadata. Real smoke: `languageParser.ts` 5333 chars/9 entries/no parse errors; `GetFileSkeletonToolHandler.ts` 7192 chars/20 entries/no parse errors; `file-utils.mjs` 766 chars/5 entries/no parse errors. Locations are non-edit metadata; use `read_file` for anchors. |
 
 ## Session Completion Template
 

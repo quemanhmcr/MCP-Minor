@@ -5,6 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import type Parser from "web-tree-sitter";
 
 import type { RuntimeContext } from "../runtime/context.js";
+import { contentHash } from "../runtime/anchor-state.js";
 import {
   getSupportedTreeSitterExtensions,
   parseSourceFile,
@@ -41,16 +42,10 @@ const DEFINITION_KINDS = new Set<SkeletonEntryKind>([
   "type",
 ]);
 
-const BODY_NODE_TYPES = new Set([
-  "class_body",
-  "enum_body",
-  "function_body",
-  "generator_function",
-  "jsx_element",
-  "object",
-  "object_pattern",
-  "statement_block",
-]);
+const LOCATION_ENCODING = "tree-sitter-utf8-byte-offsets";
+const MAX_SIGNATURE_LENGTH = 240;
+
+const BODY_NODE_TYPES = new Set(["class_body", "enum_body", "function_body", "statement_block"]);
 
 export class FileSkeletonError extends Error {
   constructor(message: string) {
@@ -83,10 +78,14 @@ export interface SourceLocation {
 }
 
 export interface SkeletonEntry {
+  id: string;
   kind: SkeletonEntryKind;
   name: string;
+  qualifiedName: string;
   signature: string;
+  signatureTruncated: boolean;
   location: SourceLocation;
+  containsParseErrors: boolean;
   children: SkeletonEntry[];
 }
 
@@ -96,6 +95,7 @@ export interface FileSkeletonEntry {
   language: "javascript" | "typescript" | "tsx";
   rootType: string;
   sourceLength: number;
+  locationEncoding: typeof LOCATION_ENCODING;
   hasParseErrors: boolean;
   entries: SkeletonEntry[];
   entryCount: number;
@@ -113,9 +113,10 @@ interface FlatDefinition {
   kind: SkeletonEntryKind;
   name: string;
   signature: string;
+  signatureTruncated: boolean;
   location: SourceLocation;
+  containsParseErrors: boolean;
   nodeId: number;
-  parentNodeId?: number;
   children: FlatDefinition[];
 }
 
@@ -175,7 +176,7 @@ async function getOneFileSkeleton(
   const parsed = await parseSourceFile({ filePath: resolved.absolutePath, source });
 
   try {
-    const extracted = extractSkeletonEntries(parsed.tree.rootNode, parsed.query, source, limit);
+    const extracted = extractSkeletonEntries(parsed.tree.rootNode, parsed.query, source, limit, resolved.relativePath);
 
     return {
       path: resolved.absolutePath,
@@ -183,6 +184,7 @@ async function getOneFileSkeleton(
       language: parsed.language.languageId,
       rootType: parsed.rootNodeType,
       sourceLength: parsed.sourceLength,
+      locationEncoding: LOCATION_ENCODING,
       hasParseErrors: parsed.hasError,
       entries: extracted.entries,
       entryCount: extracted.entryCount,
@@ -199,10 +201,11 @@ function extractSkeletonEntries(
   query: Parser.Query,
   source: string,
   limit: number,
+  relativePath: string,
 ): { entries: SkeletonEntry[]; entryCount: number; truncated: boolean } {
-  const definitions = extractDefinitions(rootNode, query, source);
-  const importsAndExports = extractImportExportEntries(rootNode, source, definitions);
-  const allEntries = [...importsAndExports, ...nestDefinitions(definitions)].sort(compareEntries);
+  const definitions = [...extractDefinitions(rootNode, query, source), ...extractAnonymousDefaultDefinitions(rootNode, source)];
+  const importsAndExports = extractImportExportEntries(rootNode, source, definitions, relativePath);
+  const allEntries = [...importsAndExports, ...nestDefinitions(definitions, relativePath)].sort(compareEntries);
   const limited = takeEntriesPreorder(allEntries, limit);
 
   return {
@@ -214,7 +217,7 @@ function extractSkeletonEntries(
 
 function extractDefinitions(rootNode: Parser.SyntaxNode, query: Parser.Query, source: string): FlatDefinition[] {
   const pairs = findNamedCapturePairs(rootNode, query);
-  const definitions = new Map<number, FlatDefinition>();
+  const definitions = new Map<string, FlatDefinition>();
 
   for (const pair of pairs) {
     const kind = getDefinitionKind(pair.definitionCapture.name);
@@ -223,15 +226,19 @@ function extractDefinitions(rootNode: Parser.SyntaxNode, query: Parser.Query, so
     }
 
     const rangeNode = extendToDefinitionWrapper(pair.definitionCapture.node);
-    if (definitions.has(rangeNode.id)) {
+    const definitionKey = `${rangeNode.id}:${pair.nameCapture.node.id}`;
+    if (definitions.has(definitionKey)) {
       continue;
     }
+    const signature = getSignature(rangeNode, source);
 
-    definitions.set(rangeNode.id, {
+    definitions.set(definitionKey, {
       kind,
       name: normalizeName(pair.nameCapture.node.text),
-      signature: getSignature(rangeNode, source),
+      signature: signature.text,
+      signatureTruncated: signature.truncated,
       location: getLocation(rangeNode),
+      containsParseErrors: containsParseErrors(rangeNode),
       nodeId: rangeNode.id,
       children: [],
     });
@@ -255,6 +262,7 @@ function extractImportExportEntries(
   rootNode: Parser.SyntaxNode,
   source: string,
   definitions: FlatDefinition[],
+  relativePath: string,
 ): SkeletonEntry[] {
   const definitionRanges = definitions.map((definition) => definition.location);
   const entries: SkeletonEntry[] = [];
@@ -262,21 +270,31 @@ function extractImportExportEntries(
   for (const child of rootNode.namedChildren) {
     if (child.type === "import_statement") {
       entries.push({
+        id: createEntryId(relativePath, "import", getImportName(child), getImportName(child), getLocation(child), getSingleLineSignature(child, source).text),
         kind: "import",
         name: getImportName(child),
-        signature: getSingleLineSignature(child, source),
+        qualifiedName: getImportName(child),
+        signature: getSingleLineSignature(child, source).text,
+        signatureTruncated: getSingleLineSignature(child, source).truncated,
         location: getLocation(child),
+        containsParseErrors: containsParseErrors(child),
         children: [],
       });
       continue;
     }
 
     if (isExportOnlyStatement(child) && !rangeContainsAny(child, definitionRanges)) {
+      const signature = getSingleLineSignature(child, source);
+      const name = getExportName(child);
       entries.push({
+        id: createEntryId(relativePath, "export", name, name, getLocation(child), signature.text),
         kind: "export",
-        name: getExportName(child),
-        signature: getSingleLineSignature(child, source),
+        name,
+        qualifiedName: name,
+        signature: signature.text,
+        signatureTruncated: signature.truncated,
         location: getLocation(child),
+        containsParseErrors: containsParseErrors(child),
         children: [],
       });
     }
@@ -285,14 +303,59 @@ function extractImportExportEntries(
   return entries;
 }
 
-function nestDefinitions(definitions: FlatDefinition[]): SkeletonEntry[] {
+function extractAnonymousDefaultDefinitions(rootNode: Parser.SyntaxNode, source: string): FlatDefinition[] {
+  const definitions: FlatDefinition[] = [];
+
+  for (const child of rootNode.namedChildren) {
+    if (child.type !== "export_statement") {
+      continue;
+    }
+
+    const valueNode = child.childForFieldName("value") ?? child.namedChildren[0];
+    const kind = getAnonymousDefaultKind(valueNode);
+    if (!kind) {
+      continue;
+    }
+
+    const signature = getSignature(child, source);
+    definitions.push({
+      kind,
+      name: "default",
+      signature: signature.text,
+      signatureTruncated: signature.truncated,
+      location: getLocation(child),
+      containsParseErrors: containsParseErrors(child),
+      nodeId: child.id,
+      children: [],
+    });
+  }
+
+  return definitions;
+}
+
+function getAnonymousDefaultKind(node: Parser.SyntaxNode | null): "class" | "function" | undefined {
+  if (!node) {
+    return undefined;
+  }
+
+  if (node.type === "class") {
+    return "class";
+  }
+
+  if (["arrow_function", "function_expression", "generator_function"].includes(node.type)) {
+    return "function";
+  }
+
+  return undefined;
+}
+
+function nestDefinitions(definitions: FlatDefinition[], relativePath: string): SkeletonEntry[] {
   const byId = new Map(definitions.map((definition) => [definition.nodeId, definition]));
   const roots: FlatDefinition[] = [];
 
   for (const definition of definitions) {
     const parent = findSmallestContainingDefinition(definition, definitions);
     if (parent) {
-      definition.parentNodeId = parent.nodeId;
       parent.children.push(definition);
     } else {
       roots.push(definition);
@@ -303,7 +366,7 @@ function nestDefinitions(definitions: FlatDefinition[]): SkeletonEntry[] {
     definition.children.sort(compareFlatDefinitions);
   }
 
-  return roots.sort(compareFlatDefinitions).map(flatDefinitionToEntry);
+  return roots.sort(compareFlatDefinitions).map((definition) => flatDefinitionToEntry(definition, relativePath));
 }
 
 function findSmallestContainingDefinition(
@@ -315,18 +378,28 @@ function findSmallestContainingDefinition(
       (candidate) =>
         candidate.nodeId !== definition.nodeId &&
         candidate.location.startByte <= definition.location.startByte &&
-        candidate.location.endByte >= definition.location.endByte,
+        candidate.location.endByte >= definition.location.endByte &&
+        rangeSize(candidate.location) > rangeSize(definition.location),
     )
     .sort((a, b) => rangeSize(a.location) - rangeSize(b.location))[0];
 }
 
-function flatDefinitionToEntry(definition: FlatDefinition): SkeletonEntry {
+function flatDefinitionToEntry(
+  definition: FlatDefinition,
+  relativePath: string,
+  parentQualifiedName?: string,
+): SkeletonEntry {
+  const qualifiedName = parentQualifiedName ? `${parentQualifiedName}.${definition.name}` : definition.name;
   return {
+    id: createEntryId(relativePath, definition.kind, definition.name, qualifiedName, definition.location, definition.signature),
     kind: definition.kind,
     name: definition.name,
+    qualifiedName,
     signature: definition.signature,
+    signatureTruncated: definition.signatureTruncated,
     location: definition.location,
-    children: definition.children.map(flatDefinitionToEntry),
+    containsParseErrors: definition.containsParseErrors,
+    children: definition.children.map((child) => flatDefinitionToEntry(child, relativePath, qualifiedName)),
   };
 }
 
@@ -476,22 +549,28 @@ async function readTextFile(resolved: ResolvedWorkspacePath, stat: Stats): Promi
     throw new FileSkeletonError(`Path '${resolved.inputPath}' is not valid UTF-8 text.`);
   }
 
-  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return text;
 }
 
-function getSignature(node: Parser.SyntaxNode, source: string): string {
-  const bodyNode = findFirstDescendant(node, (candidate) => BODY_NODE_TYPES.has(candidate.type));
-  const endIndex = bodyNode && bodyNode.startIndex > node.startIndex ? bodyNode.startIndex : node.endIndex;
+interface SignatureResult {
+  text: string;
+  truncated: boolean;
+}
+
+function getSignature(node: Parser.SyntaxNode, source: string): SignatureResult {
+  const bodyNode = findSignatureBodyNode(node);
+  const shouldCutAtBody = bodyNode && BODY_NODE_TYPES.has(bodyNode.type) && bodyNode.startIndex > node.startIndex;
+  const endIndex = shouldCutAtBody ? bodyNode.startIndex : node.endIndex;
   return normalizeSignature(source.slice(node.startIndex, endIndex));
 }
 
-function getSingleLineSignature(node: Parser.SyntaxNode, source: string): string {
+function getSingleLineSignature(node: Parser.SyntaxNode, source: string): SignatureResult {
   const lineEnd = source.indexOf("\n", node.startIndex);
   const endIndex = lineEnd === -1 ? node.endIndex : Math.min(lineEnd, node.endIndex);
   return normalizeSignature(source.slice(node.startIndex, endIndex));
 }
 
-function normalizeSignature(value: string): string {
+function normalizeSignature(value: string): SignatureResult {
   const normalized = value
     .replaceAll("\r", "\n")
     .split("\n")
@@ -501,11 +580,17 @@ function normalizeSignature(value: string): string {
     .replace(/\s+/gu, " ")
     .trim();
 
-  if (normalized.length <= 240) {
-    return normalized;
+  if (normalized.length <= MAX_SIGNATURE_LENGTH) {
+    return {
+      text: normalized,
+      truncated: false,
+    };
   }
 
-  return `${normalized.slice(0, 237)}...`;
+  return {
+    text: `${normalized.slice(0, MAX_SIGNATURE_LENGTH - 3)}...`,
+    truncated: true,
+  };
 }
 
 function getLocation(node: Parser.SyntaxNode): SourceLocation {
@@ -527,6 +612,29 @@ function extendToDefinitionWrapper(node: Parser.SyntaxNode): Parser.SyntaxNode {
   }
 
   return current;
+}
+
+function findSignatureBodyNode(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  const directBody = node.childForFieldName("body");
+  if (directBody) {
+    return directBody;
+  }
+
+  for (const child of node.namedChildren) {
+    const childBody = child.childForFieldName("body");
+    if (childBody) {
+      return childBody;
+    }
+  }
+
+  for (const child of node.namedChildren) {
+    const nested = findSignatureBodyNode(child);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return findFirstDescendant(node, (candidate) => BODY_NODE_TYPES.has(candidate.type));
 }
 
 function findFirstDescendant(
@@ -575,6 +683,10 @@ function isExportOnlyStatement(node: Parser.SyntaxNode): boolean {
     return false;
   }
 
+  if (getAnonymousDefaultKind(node.childForFieldName("value") ?? node.namedChildren[0])) {
+    return false;
+  }
+
   return !node.namedChildren.some((child) =>
     [
       "abstract_class_declaration",
@@ -592,6 +704,27 @@ function isExportOnlyStatement(node: Parser.SyntaxNode): boolean {
 
 function rangeContainsAny(node: Parser.SyntaxNode, ranges: SourceLocation[]): boolean {
   return ranges.some((range) => node.startIndex <= range.startByte && node.endIndex >= range.endByte);
+}
+
+function containsParseErrors(node: Parser.SyntaxNode): boolean {
+  if (node.hasError || node.isError || node.isMissing) {
+    return true;
+  }
+
+  return node.namedChildren.some((child) => containsParseErrors(child));
+}
+
+function createEntryId(
+  relativePath: string,
+  kind: SkeletonEntryKind,
+  name: string,
+  qualifiedName: string,
+  location: SourceLocation,
+  signature: string,
+): string {
+  return `S${contentHash(
+    `${relativePath}\0${kind}\0${name}\0${qualifiedName}\0${location.startByte}\0${location.endByte}\0${signature}`,
+  )}`;
 }
 
 function isBinaryLooking(buffer: Buffer): boolean {

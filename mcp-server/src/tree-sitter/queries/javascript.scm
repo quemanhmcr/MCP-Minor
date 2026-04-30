@@ -1,7 +1,6 @@
 (
   (method_definition
     name: [(property_identifier) (identifier)] @name.definition.method) @definition.method
-  (#not-eq? @name.definition.method "constructor")
 )
 
 (

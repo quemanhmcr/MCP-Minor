@@ -60,6 +60,7 @@ describe("getWorkspaceFileSkeleton", () => {
       relativePath: "src/sample.ts",
       language: "typescript",
       rootType: "program",
+      locationEncoding: "tree-sitter-utf8-byte-offsets",
       hasParseErrors: false,
       limit: DEFAULT_FILE_SKELETON_LIMIT,
       truncated: false,
@@ -80,6 +81,12 @@ describe("getWorkspaceFileSkeleton", () => {
       ["method", "getName"],
     ]);
     expect(findEntry(file.entries, "buildName")?.signature).toBe("export function buildName(value: string): string");
+    expect(findEntry(file.entries, "buildName")).toMatchObject({
+      id: expect.stringMatching(/^S[0-9a-f]{8}$/u),
+      qualifiedName: "buildName",
+      signatureTruncated: false,
+      containsParseErrors: false,
+    });
     expect(findEntry(file.entries, "makeGreeter")?.signature).toBe(
       "export const makeGreeter = (name: string) => new Greeter();",
     );
@@ -152,6 +159,93 @@ describe("getWorkspaceFileSkeleton", () => {
     expect(findEntry(file.entries, "Counter")?.children.map((entry) => [entry.kind, entry.name])).toEqual([
       ["method", "increment"],
     ]);
+  });
+
+  it("extracts JS and TS constructors consistently", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "constructors.js"),
+      ["class JsBox {", "  constructor(value) {", "    this.value = value;", "  }", "}", ""].join("\n"),
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "constructors.ts"),
+      ["class TsBox {", "  constructor(readonly value: string) {}", "}", ""].join("\n"),
+    );
+
+    const result = await getWorkspaceFileSkeleton(context, {
+      paths: ["src/constructors.js", "src/constructors.ts"],
+    });
+
+    expect(findEntry(result.files[0].entries, "JsBox")?.children.map((entry) => entry.name)).toEqual(["constructor"]);
+    expect(findEntry(result.files[1].entries, "TsBox")?.children.map((entry) => entry.name)).toEqual(["constructor"]);
+  });
+
+  it("extracts multiple named arrow/function declarators from one declaration", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "multi.ts"),
+      "export const first = () => 1, second = function () { return 2; };\n",
+    );
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/multi.ts"] });
+    const entries = result.files[0].entries;
+
+    expect(entries.map((entry) => [entry.kind, entry.name])).toEqual([
+      ["function", "first"],
+      ["function", "second"],
+    ]);
+    expect(new Set(entries.map((entry) => entry.id)).size).toBe(2);
+  });
+
+  it("uses declaration body fields for signatures instead of nested default parameter or heritage bodies", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "signatures.ts"),
+      [
+        "function deco(value: unknown) { return value; }",
+        "@deco({ build: () => { return 1 } })",
+        "class Decorated {",
+        "  method() {}",
+        "}",
+        "function f(cb = () => { return 1 }, x = 1) { return x; }",
+        "class D extends mixin({ trait: true }) {",
+        "  method() {}",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/signatures.ts"] });
+
+    expect(findEntry(result.files[0].entries, "Decorated")?.signature).toBe(
+      "@deco({ build: () => { return 1 } }) class Decorated",
+    );
+    expect(findEntry(result.files[0].entries, "f")?.signature).toBe(
+      "function f(cb = () => { return 1 }, x = 1)",
+    );
+    expect(findEntry(result.files[0].entries, "D")?.signature).toBe("class D extends mixin({ trait: true })");
+  });
+
+  it("extracts anonymous default exports with stable fallback names", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "defaults.tsx"),
+      [
+        "export default function() {",
+        "  return null;",
+        "}",
+        "export default class {",
+        "  render() { return null; }",
+        "}",
+        "export default () => <span />;",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/defaults.tsx"] });
+
+    expect(result.files[0].entries.map((entry) => [entry.kind, entry.name, entry.qualifiedName])).toEqual([
+      ["function", "default", "default"],
+      ["class", "default", "default"],
+      ["function", "default", "default"],
+    ]);
+    expect(new Set(result.files[0].entries.map((entry) => entry.id)).size).toBe(3);
   });
 
   it("extracts JSX named arrow components", async () => {
@@ -237,6 +331,39 @@ describe("getWorkspaceFileSkeleton", () => {
 
     expect(result.files[0].hasParseErrors).toBe(true);
     expect(result.files[0].rootType).toBe("program");
+  });
+
+  it("marks entries whose range contains parse errors", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "broken-entry.ts"), "export function broken() {\n  if (\n}\n");
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/broken-entry.ts"] });
+
+    expect(result.files[0].hasParseErrors).toBe(true);
+    expect(findEntry(result.files[0].entries, "broken")?.containsParseErrors).toBe(true);
+  });
+
+  it("keeps raw CRLF text and BOM-compatible parsing for source length and locations", async () => {
+    const source = "\uFEFFexport function first() {\r\n\treturn 1;\r\n}\r\n";
+    await fs.writeFile(path.join(workspaceRoot, "src", "crlf.ts"), source);
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/crlf.ts"] });
+    const first = findEntry(result.files[0].entries, "first");
+
+    expect(result.files[0].sourceLength).toBe(source.length);
+    expect(result.files[0].hasParseErrors).toBe(false);
+    expect(first?.location.startLine).toBe(1);
+    expect(first?.location.endLine).toBe(3);
+  });
+
+  it("marks long signatures as truncated", async () => {
+    const params = Array.from({ length: 80 }, (_, index) => `param${index}: string`).join(", ");
+    await fs.writeFile(path.join(workspaceRoot, "src", "long.ts"), `export function long(${params}) { return ''; }\n`);
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/long.ts"] });
+    const entry = findEntry(result.files[0].entries, "long");
+
+    expect(entry?.signatureTruncated).toBe(true);
+    expect(entry?.signature.endsWith("...")).toBe(true);
   });
 
   it("rejects unsupported extensions explicitly", async () => {

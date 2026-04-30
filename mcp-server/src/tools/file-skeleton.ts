@@ -19,10 +19,14 @@ const sourceLocationSchema = z.object({
 });
 
 const skeletonEntrySchema: z.ZodType<unknown> = z.object({
+  id: z.string(),
   kind: z.enum(["class", "enum", "export", "function", "import", "interface", "method", "module", "type"]),
   name: z.string(),
+  qualifiedName: z.string(),
   signature: z.string(),
+  signatureTruncated: z.boolean(),
   location: sourceLocationSchema,
+  containsParseErrors: z.boolean(),
   children: z.array(z.lazy(() => skeletonEntrySchema)),
 });
 
@@ -46,6 +50,7 @@ export const fileSkeletonOutputSchema = {
       language: z.enum(["javascript", "typescript", "tsx"]),
       rootType: z.string(),
       sourceLength: z.number().int().nonnegative(),
+      locationEncoding: z.literal("tree-sitter-utf8-byte-offsets"),
       hasParseErrors: z.boolean(),
       entries: z.array(skeletonEntrySchema),
       entryCount: z.number().int().nonnegative(),
