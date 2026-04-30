@@ -41,8 +41,8 @@ describe("read_file MCP tool", () => {
       expect(content[0]).toMatchObject({
         type: "text",
       });
-      expect(content[0]?.text).toMatch(/file: src\/file\.ts \| hash:[0-9a-f]{8} \| 3L \(2-2\)\n2: beta/u);
-      expect(content[0]?.text).not.toMatch(/A[0-9a-f]{8}§/u);
+      expect(content[0]?.text).toMatch(/src\/file\.ts L2-2\/3\n2\|beta/u);
+      expect(content[0]?.text).not.toMatch(/A[0-9a-z]{6}§/u);
       expect(result.structuredContent).toMatchObject({
         view: "read",
         lineLimit: 2_000,
@@ -50,10 +50,6 @@ describe("read_file MCP tool", () => {
         files: [
           {
             relativePath: "src/file.ts",
-            editFileCompatibility: {
-              editable: true,
-              maxBytes: MAX_EDIT_FILE_BYTES,
-            },
             totalLines: 3,
             startLine: 2,
             endLine: 2,
@@ -62,6 +58,7 @@ describe("read_file MCP tool", () => {
           },
         ],
       });
+      expect(JSON.stringify(result.structuredContent)).not.toContain("editFileCompatibility");
       expect(JSON.stringify(result.structuredContent)).not.toContain("lines");
       expect(JSON.stringify(result.structuredContent)).not.toContain(path.join(workspaceRoot, "src", "file.ts"));
     } finally {
@@ -96,7 +93,7 @@ describe("read_file MCP tool", () => {
         line: 2,
         text: "beta",
       });
-      expect(structured.files[0].lines[0].anchor).toMatch(/^A[0-9a-f]{8}$/u);
+      expect(structured.files[0].lines[0].anchor).toMatch(/^A[0-9a-z]{6}$/u);
     } finally {
       await client.close();
       await server.close();
@@ -118,7 +115,7 @@ describe("read_file MCP tool", () => {
       });
 
       const content = result.content as Array<{ type: string; text: string }>;
-      expect(content[0]?.text).toMatch(/edit-ready\n2: A[0-9a-f]{8}§beta/u);
+      expect(content[0]?.text).toMatch(/src\/file\.ts L2-2\/3 edit\nA[0-9a-z]{6}§beta/u);
       expect(result.structuredContent).toMatchObject({
         view: "edit",
         files: [{ relativePath: "src/file.ts", editReady: true }],

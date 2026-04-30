@@ -1,6 +1,9 @@
 import path from "node:path";
 
 const ANCHOR_DELIMITER = "\u00a7";
+const ANCHOR_ALPHABET_SIZE = 36;
+const ANCHOR_HASH_DIGITS = 6;
+const ANCHOR_HASH_SPACE = ANCHOR_ALPHABET_SIZE ** ANCHOR_HASH_DIGITS;
 const MAX_TRACKED_LINES = 50_000;
 const MAX_TRACKED_FILES = 1_024;
 const MAX_TRACKED_SESSIONS = 50;
@@ -21,8 +24,32 @@ export interface AnchorSnapshot {
   editReady: boolean;
 }
 
+export interface AnchorEntropy {
+  alphabet: "0-9a-z";
+  alphabetSize: number;
+  encodedHashDigits: number;
+  encodedHashSpace: number;
+  prefix: "A";
+  totalChars: number;
+  collisionHandling: "retry-with-salt-and-check-used-and-historical-anchors";
+  maxTrackedLines: number;
+}
+
 export function getAnchorDelimiter(): string {
   return ANCHOR_DELIMITER;
+}
+
+export function getAnchorEntropy(): AnchorEntropy {
+  return {
+    alphabet: "0-9a-z",
+    alphabetSize: ANCHOR_ALPHABET_SIZE,
+    encodedHashDigits: ANCHOR_HASH_DIGITS,
+    encodedHashSpace: ANCHOR_HASH_SPACE,
+    prefix: "A",
+    totalChars: 1 + ANCHOR_HASH_DIGITS,
+    collisionHandling: "retry-with-salt-and-check-used-and-historical-anchors",
+    maxTrackedLines: MAX_TRACKED_LINES,
+  };
 }
 
 export function contentHash(content: string): string {
@@ -276,7 +303,8 @@ function matchMiddleGreedily(
 }
 
 function createAnchor(sessionId: string, documentKey: string, lineHash: number, occurrence: number, salt: number): string {
-  return `A${fnv1aHex(`${sessionId}\0${documentKey}\0${lineHash}\0${occurrence}\0${salt}`)}`;
+  const hash = fnv1a(`${sessionId}\0${documentKey}\0${lineHash}\0${occurrence}\0${salt}`) % ANCHOR_HASH_SPACE;
+  return `A${hash.toString(ANCHOR_ALPHABET_SIZE).padStart(ANCHOR_HASH_DIGITS, "0")}`;
 }
 
 function computeLineHashes(lines: string[]): Uint32Array {

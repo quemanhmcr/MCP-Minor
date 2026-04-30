@@ -16,6 +16,29 @@ export class EditFileError extends Error {
   }
 }
 
+export class MustRereadForEditError extends EditFileError {
+  readonly structuredContent: {
+    code: "MUST_REREAD_FOR_EDIT";
+    relativePath: string;
+    requiredView: "edit";
+    suggestedAction: "call read_file with view: 'edit' for this path, then retry edit_file with the returned anchors";
+  };
+
+  constructor(resolved: ResolvedWorkspacePath, reason: "missing" | "wrong-view") {
+    const state = reason === "missing" ? "has no edit-ready anchor state" : "was last read without edit anchors";
+    super(
+      `Path '${resolved.inputPath}' ${state}. Call read_file with view: "edit" for this path, then retry edit_file with the returned anchors.`,
+    );
+    this.name = "MustRereadForEditError";
+    this.structuredContent = {
+      code: "MUST_REREAD_FOR_EDIT",
+      relativePath: resolved.relativePath,
+      requiredView: "edit",
+      suggestedAction: "call read_file with view: 'edit' for this path, then retry edit_file with the returned anchors",
+    };
+  }
+}
+
 export interface EditFileInput {
   path: string;
   edits: EditFileOperation[];
@@ -92,11 +115,11 @@ export async function editWorkspaceFile(context: RuntimeContext, input: EditFile
   const document = await readTextDocument(resolved, stat);
   const snapshot = getAnchorSnapshot(context.sessionId, resolved.absolutePath);
   if (!snapshot) {
-    throw new EditFileError(`Path '${resolved.inputPath}' has no edit-ready anchor state. Call read_file with view: "edit" before edit_file.`);
+    throw new MustRereadForEditError(resolved, "missing");
   }
 
   if (!snapshot.editReady) {
-    throw new EditFileError(`Path '${resolved.inputPath}' was last read without edit anchors. Call read_file with view: "edit" before edit_file.`);
+    throw new MustRereadForEditError(resolved, "wrong-view");
   }
 
   const fileHashBefore = contentHash(document.text);

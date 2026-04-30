@@ -133,7 +133,14 @@ describe("editWorkspaceFile", () => {
         path: "src/main.ts",
         edits: [{ anchor: anchors.beta, oldText: "beta", newText: "BETA" }],
       }),
-    ).rejects.toThrow('Path \'src/main.ts\' has no edit-ready anchor state. Call read_file with view: "edit" before edit_file.');
+    ).rejects.toMatchObject({
+      structuredContent: {
+        code: "MUST_REREAD_FOR_EDIT",
+        relativePath: "src/main.ts",
+        requiredView: "edit",
+        suggestedAction: "call read_file with view: 'edit' for this path, then retry edit_file with the returned anchors",
+      },
+    });
 
     await expect(readFile("src/main.ts")).resolves.toBe("alpha\nbeta\ngamma\ndelta\n");
   });
@@ -396,7 +403,7 @@ describe("editWorkspaceFile", () => {
 
 function dummyEdit() {
   return {
-    anchor: "A00000000",
+    anchor: "A000000",
     oldText: "x",
     newText: "y",
   };

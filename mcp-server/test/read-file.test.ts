@@ -5,7 +5,7 @@ import path from "node:path";
 import { formatReadFileResult, readWorkspaceFiles } from "../src/filesystem/read-file.js";
 import { MAX_EDIT_FILE_BYTES } from "../src/filesystem/edit-file-limits.js";
 import type { RuntimeContext } from "../src/runtime/context.js";
-import { resetAnchorState } from "../src/runtime/anchor-state.js";
+import { getAnchorEntropy, resetAnchorState } from "../src/runtime/anchor-state.js";
 
 describe("readWorkspaceFiles", () => {
   let workspaceRoot: string;
@@ -48,8 +48,8 @@ describe("readWorkspaceFiles", () => {
       truncated: false,
     });
     expect(result.files[0].lines.map((line) => line.line)).toEqual([1, 2, 3, 4]);
-    expect(result.files[0].lines[0].formatted).toMatch(/^1: A[0-9a-f]{8}§one$/u);
-    expect(result.files[0].content).toContain("2: ");
+    expect(result.files[0].lines[0].formatted).toMatch(/^A[0-9a-z]{6}§one$/u);
+    expect(result.files[0].content).toContain("A");
   });
 
   it("reads explicit inclusive line ranges", async () => {
@@ -166,7 +166,7 @@ describe("readWorkspaceFiles", () => {
       reason:
         "This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.",
     });
-    expect(result.files[0].content).toMatch(/^1: A[0-9a-f]{8}\u00a7first$/u);
+    expect(result.files[0].content).toMatch(/^A[0-9a-z]{6}\u00a7first$/u);
     expect(result.files[0].truncated).toBe(false);
   });
 
@@ -319,9 +319,34 @@ describe("readWorkspaceFiles", () => {
     expect(result.files[0].anchorDelimiter).toBe("\u00a7");
     expect(new Set(lines.map((line) => line.anchor)).size).toBe(lines.length);
     for (const line of lines) {
-      expect(line.anchor).toMatch(/^A[0-9a-f]{8}$/u);
-      expect(line.formatted).toBe(`${line.line}: ${line.anchor}\u00a7${line.text}`);
+      expect(line.anchor).toMatch(/^A[0-9a-z]{6}$/u);
+      expect(line.formatted).toBe(`${line.anchor}\u00a7${line.text}`);
     }
+  });
+
+  it("documents compact anchor entropy and keeps large generated anchor sets unique", async () => {
+    const entropy = getAnchorEntropy();
+    expect(entropy).toEqual({
+      alphabet: "0-9a-z",
+      alphabetSize: 36,
+      encodedHashDigits: 6,
+      encodedHashSpace: 36 ** 6,
+      prefix: "A",
+      totalChars: 7,
+      collisionHandling: "retry-with-salt-and-check-used-and-historical-anchors",
+      maxTrackedLines: 50_000,
+    });
+
+    const content = Array.from({ length: 5_000 }, (_, index) => `line-${index}`).join("\n");
+    await fs.writeFile(path.join(workspaceRoot, "src", "large-anchor-set.ts"), content);
+
+    const result = await readWorkspaceFiles(context, {
+      paths: ["src/large-anchor-set.ts"],
+      lineLimit: 5_000,
+    });
+    const anchors = result.files[0].lines.map((line) => line.anchor);
+
+    expect(new Set(anchors).size).toBe(anchors.length);
   });
 });
 

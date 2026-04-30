@@ -510,6 +510,40 @@ describe("getWorkspaceFileSkeleton", () => {
     expect(signatures).toContain("fn long L1 export function long(param0: string, param1:");
     expect(signatures).toContain("sig-trunc");
   });
+
+  it("keeps React TSX generic-heavy signatures useful and bounded", async () => {
+    const fixture = path.resolve("test", "fixtures", "react-generic-heavy.tsx");
+    const source = await fs.readFile(fixture, "utf8");
+    await fs.copyFile(fixture, path.join(workspaceRoot, "src", "react-generic-heavy.tsx"));
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/react-generic-heavy.tsx"] });
+    const outline = formatFileSkeletonCompact(result, { view: "outline" });
+    const signatures = formatFileSkeletonCompact(result, { view: "signatures" });
+    const fullJson = JSON.stringify(result, null, 2);
+    const file = result.files[0];
+    const entries = flattenEntries(file.entries);
+
+    expect(file.language).toBe("tsx");
+    expect(file.hasParseErrors).toBe(false);
+    expect(entries.map((entry) => [entry.kind, entry.name])).toEqual(
+      expect.arrayContaining([
+        ["interface", "TableColumn"],
+        ["type", "AsyncState"],
+        ["type", "DataTableProps"],
+        ["function", "DataTable"],
+        ["function", "ToolbarInner"],
+        ["function", "withAsyncState"],
+        ["function", "selectValue"],
+      ]),
+    );
+    expect(signatures).toContain("export function DataTable<TData extends { id: string }, TMeta = Record<string, never>>");
+    expect(signatures).toContain("export function withAsyncState<TProps extends object, TData>");
+    expect(signatures).toContain("sig-trunc");
+    expect(outline).not.toContain("TData extends");
+    expect(signatures.length).toBeLessThan(source.length * 0.75);
+    expect(outline.length).toBeLessThan(signatures.length);
+    expect(signatures.length).toBeLessThan(fullJson.length * 0.45);
+  });
 });
 
 describe("getWorkspaceFileSkeleton real Dirac repo smoke", () => {

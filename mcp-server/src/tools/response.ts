@@ -22,6 +22,7 @@ export interface ToolErrorResponse {
       text: string;
     },
   ];
+  structuredContent?: ToolStructuredResult;
 }
 
 export type ToolResponse = ToolSuccessResponse | ToolErrorResponse;
@@ -56,6 +57,7 @@ export function chooseOutputFormat(format: ToolOutputFormat | undefined): ToolOu
 
 export function toolErrorResponse(error: unknown, normalizeError: (error: unknown) => Error = normalizeToolError): ToolErrorResponse {
   const normalized = normalizeError(error);
+  const structuredContent = getErrorStructuredContent(normalized);
 
   return {
     isError: true,
@@ -65,6 +67,7 @@ export function toolErrorResponse(error: unknown, normalizeError: (error: unknow
         text: normalized.message,
       },
     ],
+    ...(structuredContent === undefined ? {} : { structuredContent }),
   };
 }
 
@@ -74,4 +77,12 @@ export function normalizeToolError(error: unknown): Error {
   }
 
   return new Error(String(error));
+}
+
+function getErrorStructuredContent(error: Error): ToolStructuredResult | undefined {
+  if ("structuredContent" in error && typeof error.structuredContent === "object" && error.structuredContent !== null) {
+    return error.structuredContent as ToolStructuredResult;
+  }
+
+  return undefined;
 }

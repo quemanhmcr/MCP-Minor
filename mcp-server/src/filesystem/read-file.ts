@@ -74,13 +74,12 @@ export interface CompactReadFileResult {
   view: "read" | "edit";
   files: Array<{
     relativePath: string;
-    fileHash: string;
     totalLines: number;
     startLine: number;
     endLine: number;
     truncated: boolean;
     editReady: boolean;
-    editFileCompatibility: EditFileCompatibility;
+    editFileCompatibility?: EditFileCompatibility;
   }>;
   lineLimit: number;
   truncated: boolean;
@@ -125,7 +124,9 @@ export async function readWorkspaceFiles(context: RuntimeContext, input: ReadFil
 export function formatReadFileResult(result: ReadFileResult, options: { includeAnchors?: boolean } = {}): string {
   return result.files
     .map((file) => {
-      const header = `file: ${file.relativePath} | hash:${file.fileHash} | ${file.totalLines}L (${file.startLine}-${file.endLine})${options.includeAnchors ? " | edit-ready" : ""}`;
+      const header = options.includeAnchors
+        ? `${file.relativePath} L${file.startLine}-${file.endLine}/${file.totalLines} edit`
+        : `${file.relativePath} L${file.startLine}-${file.endLine}/${file.totalLines}`;
       const fileBreak = result.files.length > 1 ? `--- ${file.relativePath} ---\n` : "";
       const editFileWarning =
         file.editFileCompatibility.reason === undefined ? "" : `\nwarn: ${file.editFileCompatibility.reason}`;
@@ -139,17 +140,20 @@ export function compactReadFileResult(result: ReadFileResult, options: { include
     view: options.includeAnchors ? "edit" : "read",
     files: result.files.map((file) => ({
       relativePath: file.relativePath,
-      fileHash: file.fileHash,
       totalLines: file.totalLines,
       startLine: file.startLine,
       endLine: file.endLine,
       truncated: file.truncated,
       editReady: Boolean(options.includeAnchors),
-      editFileCompatibility: file.editFileCompatibility,
+      ...(file.editFileCompatibility.editable ? {} : { editFileCompatibility: file.editFileCompatibility }),
     })),
     lineLimit: result.lineLimit,
     truncated: result.truncated,
   };
+}
+
+export function formatReadLineNumber(lineNumber: number): string {
+  return lineNumber.toString(36);
 }
 
 function validatePaths(paths: unknown): string[] {
@@ -250,7 +254,7 @@ async function readOneFile(
       line: lineNumber,
       anchor,
       text: line,
-      formatted: includeAnchors ? `${lineNumber}: ${formatLineWithAnchor(line, anchor)}` : `${lineNumber}: ${line}`,
+      formatted: includeAnchors ? formatLineWithAnchor(line, anchor) : formatReadLineForOutput(lineNumber, line),
     };
   });
   const cappedByLineLimit = cappedLineCount < lineCount;
@@ -269,6 +273,10 @@ async function readOneFile(
     truncated: cappedByLineLimit || outputCap.truncated,
     anchorDelimiter: getAnchorDelimiter(),
   };
+}
+
+function formatReadLineForOutput(lineNumber: number, line: string): string {
+  return line.length === 0 ? "" : `${formatReadLineNumber(lineNumber)}|${line}`;
 }
 
 function getEditFileCompatibility(stat: Stats): EditFileCompatibility {

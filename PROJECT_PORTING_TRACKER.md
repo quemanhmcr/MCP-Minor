@@ -1,247 +1,114 @@
-# Dirac Codebase Tools MCP Porting Tracker
+# Porting Tracker
 
-Operational source of truth for the standalone MCP port. Keep this file optimized for quickly resuming work.
+This file is the live operational state for coding-agent sessions. It contains current status, decisions, risks, benchmarks, verification commands, and session handoff notes. It does not define tool contracts; those live in [README.md](README.md). It does not map upstream Dirac source internals; those live in [DIRAC_TOOL_PORTING_NOTES.md](DIRAC_TOOL_PORTING_NOTES.md).
 
-## Current Project Status
+## TL;DR
 
-- Goal: build a standalone MCP server for selected Dirac codebase-working tools only.
-- Runtime package: `mcp-server/`, Node.js >= 20.11, ESM TypeScript, npm with committed `package-lock.json`.
-- Transport: MCP stdio first. Do not add HTTP/SSE until a real consumer needs it.
-- Upstream source: `dirac/` is a pinned git submodule and read-only source material.
-- Pinned Dirac commit: `e827ec30d4cdae078588df2040f203b780d657ad`.
-- Current production-ready MCP tools: `list_files`, `read_file`, `search_files`, `edit_file`, `get_file_skeleton`.
-- Tool outputs are compact by default where token efficiency matters. Primary control is task-oriented `view`; legacy `format: "json"` remains an alias for full rich structured output.
-- Shared tree-sitter runtime/asset foundation is implemented and verified, and `get_file_skeleton` is the first AST-backed MCP tool on top of it.
-- No `get_function`, symbol index, multi-file editing tools, or command execution are implemented.
-- Generated artifacts must stay out of git. In particular, remove `mcp-server/dist/` after any build.
+- Branch: `main`; upstream `dirac/` submodule pinned at `e827ec30d4cdae078588df2040f203b780d657ad`.
+- Production-ready tools: `list_files`, `search_files`, `read_file`, `edit_file`, `get_file_skeleton`.
+- Current output contract: compact task-oriented `view` defaults; `view: "full"` for rich JSON; legacy `format` aliases remain.
+- Next recommended implementation task: port `get_function`.
+- Generated artifacts must stay out of git; remove `mcp-server/dist/` after builds.
 
-## Production-Ready Tools
+## Working Discipline
 
-### `list_files`
+This is the operating standard for coding-agent sessions. If a rule conflicts with a plan, change the plan.
 
-Status: production-ready under current MCP scope.
+### Scope And Sources
 
-- MCP callable through `McpServer.registerTool`.
-- Read-only, idempotent, workspace-root guarded.
-- Accepts `paths`, optional `recursive`, optional `limit`, optional `view: "outline" | "full"`.
-- Defaults to compact newline text with `f`/`d` markers and relative paths plus summary-only structured metadata.
-- `view: "full"` returns full `{ entries, limit, truncated }` with entries shaped as `{ path, type, relativePath }`.
-- Deterministic sort by entry name within each listed directory.
-- Skips generated/heavy directories: `node_modules`, `dist`, `coverage`, `.git`; also skips submodule-style `.git` files.
-- Does not follow symlinks.
-- Defensively validates direct handler calls, clamps oversized limits, deduplicates overlapping inputs, and fails fast on missing paths.
+- Read order: TL;DR, README contracts, then upstream notes only when porting or auditing Dirac behavior.
+- One session, one goal. Do not port more than one tool or one small shared dependency unless explicitly re-planned.
+- Adjacent issues go to Active Risks or Next Sessions unless they block the stated goal.
+- Work in `mcp-server/`; `dirac/` is read-only. Do not add HTTP/SSE or command execution without a Decision entry.
+- Canonical sources: README for contracts, this tracker for live state, DIRAC_TOOL_PORTING_NOTES for upstream research.
 
-Dirac parity:
+### Evidence
 
-- Parity accurate for the core read-only listing purpose and generated directory skips.
-- Intentionally different from Dirac: compact text is the MCP default and full structured JSON is explicit through `view: "full"`; no line counts or mtimes; no globby/gitignore integration; no home/root special case beyond workspace-root containment; non-git hidden files and hidden directories remain visible.
+- Claims need evidence: tests for behavior, MCP smoke for MCP tools, real pinned Dirac smoke for Dirac parity, built smoke for runtime/assets, benchmarks for size/perf.
+- New behavior needs at least one test that would have failed before the change.
+- Do not call a tool `production-ready` until the checklist below passes. One fixture or one path is not enough.
 
-### `search_files`
+### Contracts
 
-Status: production-ready under current MCP scope.
+- Schemas, views, defaults, aliases, anchor format, and error codes are README contracts.
+- Prefer additive changes. Renames/removals need a deprecation alias or migration note plus a Decision entry.
+- Default compact output is a contract; changing it requires README, Tool Status, Decision, and output-size verification.
+- `view: "full"` is the rich-output opt-in. Legacy `format: "json"` is only an alias.
 
-- MCP callable through `McpServer.registerTool`.
-- Read-only, idempotent, workspace-root guarded.
-- Accepts `paths`, `regex`, optional `filePattern`, optional `contextLines`, optional `limit`, optional `view: "matches" | "files" | "full"`, optional `includeColumn`.
-- Uses system `rg` via `child_process.spawn` with an args array, not shell string composition.
-- Defaults to grep-like compact output with `relativePath:line: match`; byte columns are included only when `includeColumn` is true. `view: "files"` groups high match counts by file and line numbers.
-- `view: "full"` returns full `{ matches, limit, truncated }` with matches shaped as `{ path, relativePath, line, column?, match, preview? }`.
-- Skips dotfiles, hidden directories, `node_modules`, `dist`, `coverage`, and `.git`, including when dot/hidden paths are targeted explicitly.
-- Caps captured ripgrep stdout before parsing and passes `--max-count` using the clamped MCP limit.
-- Surfaces missing-ripgrep and invalid-regex failures as concise MCP tool errors without stack traces.
+### Safety
 
-Dirac parity:
+- Resolve input paths inside configured workspace roots and reject symlink escapes.
+- Mutations validate fully before writing and preserve no-partial-write behavior for validation failures.
+- Stale anchors/hashes, unknown anchors, and oldText mismatches fail clearly; do not auto-heal them.
+- Never commit generated artifacts (`dist/`, `build/`, `.turbo/`, `node_modules/`, coverage, logs).
 
-- Parity accurate for Dirac's core `rg --json` search approach, Rust regex behavior, hidden-path exclusion, generated-directory exclusion, context line clamp, first-submatch-only same-line behavior, and byte-column behavior.
-- Intentionally different from Dirac: compact grep-like/grouped text is the MCP default and full structured JSON is explicit; no `AnchorStateManager` integration; no `.diracignore` controller; no bundled `rg` lookup.
+### Testing
 
-Current caveats:
+- New MCP tools need handler/domain tests, schema validation, MCP in-memory smoke, and real pinned Dirac smoke when porting Dirac behavior.
+- File/path tools cover: invalid input, oversized input, missing path, directory path, unsupported type, non-UTF-8/binary-looking file, symlink escape, out-of-workspace path, and permission denied when stable locally.
+- Runtime/asset tools need built `dist` smoke. Compact and full outputs each need shape assertions.
 
-- `column` is ripgrep's 1-based byte column.
-- Multiple regex submatches on the same line produce one MCP match entry using ripgrep's first submatch, matching Dirac's parsed-output behavior.
-- `limit` is the global MCP result limit after parsing. `--max-count` is also used as a per-file safety bound.
+### Output And Tokens
 
-### `read_file`
+- Defaults are compact and agent-readable; full structured payloads require documented opt-in views.
+- Measure size at the MCP boundary: `content` plus `structuredContent`.
+- Scalable outputs need a Benchmarks Current row before `production-ready`.
+- Compact navigation/summarization output larger than raw source is a product bug unless justified.
 
-Status: production-ready under current standalone MCP text-file scope.
+### Documentation
 
-- MCP callable through `McpServer.registerTool`.
-- Read-only, idempotent, workspace-root guarded.
-- Accepts `paths`, optional `startLine`/`endLine`, Dirac-compatible `start_line`/`end_line`, optional `lineLimit`, optional `view: "read" | "edit" | "full"`, optional `includeAnchors`.
-- Defaults to compact line-numbered text without anchors. `view: "edit"` includes anchors in text and marks the file edit-ready. Compact structured metadata stays summary-only.
-- `view: "full"` returns full `{ files, lineLimit, truncated }`, where each file includes absolute `path`, slash-stable `relativePath`, `fileHash`, `editFileCompatibility`, `totalLines`, `startLine`, `endLine`, per-line `{ line, anchor, text, formatted }`, line-numbered `content`, `anchorDelimiter`, and `truncated`.
-- Generates deterministic session-scoped anchors using `RuntimeContext.sessionId`, normalized absolute path, line hashes, and in-memory reconciliation. Repeated same-content reads in the same session keep anchors. Reconciliation uses an ordered LCS-style match over FNV-1a line hashes, with prefix/suffix fast paths and a bounded greedy fallback for very large middles; matched unchanged lines keep anchors, while inserted, edited, deleted/reappearing, or unmatched moved lines get new anchors.
-- Keeps duplicate identical lines as distinct anchors. Duplicate lines are preserved by ordered matching, so insertion/deletion around duplicates keeps the best matching existing anchors without assigning one anchor to two current lines.
-- Uses Dirac's FNV-1a content hash shape for `[File Hash: ...]`.
-- Reports `editFileCompatibility: { editable, maxBytes, reason? }` for each file and adds a formatted warning when ranged reads inspect files larger than the 1MB `edit_file` mutation cap.
-- Rejects full-file reads over 50KB unless a line range is supplied, with a hard 20MB read cap and bounded line/output caps.
-- Rejects missing paths, out-of-workspace paths, directories, symlinks, symlink escapes, binary-looking files, invalid UTF-8, and unsupported rich/binary extensions with concise MCP errors.
+- Update README for contracts, this tracker for state/risks/decisions/benchmarks/sessions, and DIRAC_TOOL_PORTING_NOTES for upstream research.
+- Session Log entries stay short: date, area, outcome, verification, next.
+- Decisions are append-only and state the choice, reason, and revisit condition. Replace benchmark snapshots instead of keeping history.
 
-Dirac parity:
+### Git And Worktree
 
-- Parity accurate for multi-path schema, one-based inclusive line ranges, full-read 50KB safety behavior, FNV-1a file hashes, hash-anchored lines, and session-scoped anchor lifecycle intent.
-- Intentionally different from Dirac: compact read text without anchors is the default, edit-ready anchored text is explicit, and full per-line structured JSON is explicit. Anchor IDs are deterministic `Axxxxxxxx` hashes instead of random dictionary words; pure reorder/move handling is conservative and only preserves the ordered unchanged subsequence; no repeated-read "no changes have been made" elision from conversation history; no approval UI, telemetry, file context tracker, `.diracignore`, image blocks, or PDF/DOCX/IPYNB/XLSX extraction.
+- Start with `git status --short --branch`; preserve unrelated dirty worktree changes.
+- Touch only files needed for the goal. Do not revert, reformat, stash, commit, or push unrelated/user changes unless explicitly asked.
+- Commits are one logical unit and name the affected tool/area. Submodule pin changes need a Decision entry.
 
-### `edit_file`
+### Production-Ready Checklist
 
-Status: production-ready under current MCP single-file text/code scope.
+A tool may be marked `production-ready` only when all apply:
 
-- MCP callable through `McpServer.registerTool`.
-- Mutating, workspace-root guarded, single file per call.
-- Accepts `path`, `edits: { anchor, oldText, newText }[]`, optional `view: "summary" | "full"`.
-- Requires existing same-session edit-ready anchor state from `read_file` with `view: "edit"`.
-- Anchor state is in-memory and session-scoped. It does not survive server restart/reset/session changes; missing or non-edit-ready anchor state produces a concise instruction to call `read_file` with `view: "edit"` again.
-- Stores the normalized full-file hash from the last `read_file` or successful `edit_file` anchor refresh. Before any write, rejects if the current normalized full-file hash differs, including same-line-count external or cross-session changes.
-- Anchor identifies the start line only. The edit span is exactly the logical line count in `oldText`, starting at that anchor.
-- `oldText` and `newText` normalize CRLF/CR to LF for validation and replacement. `oldText` must exactly match the current file lines at the resolved span; there is no fuzzy match, fallback search, or unanchored replacement.
-- Computes all ranges before writing, rejects overlaps, then applies validated edits bottom-to-top and writes once. Unknown anchors, stale line counts, oldText mismatches, overlap, path errors, symlinks, binary-looking files, unsupported rich/binary extensions, and oversized files fail before any write.
-- Preserves the existing final newline state and writes with the existing dominant line ending (`crlf` for CRLF-dominant files, otherwise `lf`).
-- Refreshes anchor state and the stored file hash after a successful write so subsequent same-session reads/edits use updated content.
-- Uses a documented 1MB edit mutation cap, intentionally tighter than `read_file`'s 20MB hard read cap. Oversized-file errors explicitly explain that ranged `read_file` inspection may still work even though `edit_file` mutation is unavailable.
-- Defaults to compact edit summary text and lean metadata. `view: "full"` returns full structured `{ path, relativePath, changed: true, editsApplied, fileHashBefore, fileHashAfter, lineEnding, appliedEdits, diff }`; `diff` is a deterministic patch summary using `*** Update File`, `@@ start,oldCount -> newCount @@`, `-old`, and `+new` lines.
+- README contract, Tool Status, and Session Log are updated.
+- Unit/domain tests cover happy paths and relevant edges.
+- MCP smoke passes; real pinned Dirac smoke passes for Dirac behavior; built smoke passes for runtime/assets.
+- Compact and full outputs are verified; scalable outputs have a benchmark row.
+- Workspace/path safety is tested.
+- No unresolved `TODO`, `FIXME`, `xit`, or `.skip` remains in touched handler/test code.
 
-Dirac parity:
+## Tool Status
 
-- Parity accurate for anchor-first editing, exact anchor text validation intent, non-overlap rejection, bottom-to-top application, and anchor state refresh after write.
-- Intentionally different from Dirac: single file only, replace-only MCP schema, start anchor plus exact `oldText` instead of Dirac's full `Anchor§line_text` start/end anchors, no `insert_before`/`insert_after`, no multi-file batching, no approval UI, no VS Code diff provider, no diagnostics, no auto-format/user-edit feedback, no telemetry, compact MCP text by default, and full structured JSON only when requested.
+| Tool | Status | Languages | Gaps | Risk |
+| --- | --- | --- | --- | --- |
+| `list_files` | production-ready | n/a | no `.diracignore`, no line counts/mtimes | low |
+| `search_files` | production-ready | n/a | no `.diracignore`, system `rg` required, no bundled rg | low |
+| `read_file` | production-ready | UTF-8 text/code | no rich extraction for PDF/DOCX/XLSX/notebooks/images | medium |
+| `edit_file` | production-ready | UTF-8 text/code | single-file replace-only, no insert/end-anchor/multi-file batching | medium |
+| `get_file_skeleton` | production-ready | JS/TS/JSX/TSX | no call graph comments, no non-JS/TS languages | medium |
+| `get_function` | not-started | planned JS/TS/JSX/TSX | needs range lookup, output views, optional edit anchors, tests | medium |
+| `find_symbol_references` | not-started | undecided | needs symbol index and persistence decision | high |
+| `replace_symbol` | not-started | undecided | needs AST range resolution and mutation model | high |
+| `rename_symbol` | not-started | undecided | needs symbol index and multi-file diff/reporting | high |
+| `diagnostics_scan` | not-started | undecided | upstream is host/integration-heavy | high |
+| `execute_command` | not-started | n/a | needs sandbox/permission policy | high |
 
-### `get_file_skeleton`
+See README for tool schemas and output views.
 
-Status: production-ready under current MCP JS/TS AST scope.
+## Active Risks
 
-- MCP callable through `McpServer.registerTool`.
-- Read-only, idempotent, workspace-root guarded.
-- Accepts `paths`, optional `limit`, optional `view: "outline" | "signatures" | "full"`, optional `includeImports`, optional `maxSignatureChars`; supported extensions are `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx`.
-- Reuses `src/tree-sitter/runtime.ts`; no second parser/runtime path.
-- Rejects unsupported extensions, missing paths, directories, symlinks, symlink escapes, out-of-workspace paths, rich/binary extensions, binary-looking files, invalid UTF-8, and files over the 1MB parse safety cap before parsing.
-- Defaults to compact `signatures` text with grouped imports/exports, short kind tags, line ranges, bounded signatures, and parse-error markers only where relevant. `view: "outline"` omits signatures for cheapest navigation.
-- `view: "full"` returns full structured `{ files, limit, truncated }`; each file includes absolute `path`, stable `relativePath`, `language`, `rootType`, `sourceLength`, `sourceLineCount`, `locationEncoding`, `hasParseErrors`, `entryCount`, per-file `limit`, per-file `truncated`, and nested skeleton `entries`.
-- Skeleton entries are shaped as `{ id, kind, name, qualifiedName, signature, signatureTruncated, location, containsParseErrors, children }`, with one-based line ranges and tree-sitter UTF-8 byte offsets against raw file text.
-- Preserves imports, export-only statements, exported definitions, anonymous default exports, top-level functions/classes, JS/TS constructors, class/interface methods, named arrow/function expressions including multiple declarators, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
-- Signature extraction uses tree-sitter `body` fields first so nested callback/default-parameter/heritable expression bodies do not truncate declaration signatures. A DFS fallback remains for unusual grammar nodes without a `body` field.
-- Parse recovery is explicit through file-level `hasParseErrors` and entry-level `containsParseErrors`; syntax-error fixtures are covered.
-- Entry `id` values are stable skeleton identifiers, not edit anchors. Locations are non-edit metadata. Use `read_file` to obtain edit-compatible anchors.
-
-Dirac parity:
-
-- Parity accurate for the core purpose of extracting a structural outline from tree-sitter captures, including nested definitions and JS/TS family support.
-- Intentionally different from Dirac: compact signatures/outline text is the MCP default and full structured JSON is explicit; no `AnchorStateManager` integration; no call graph comments; no `.diracignore`; no approval UI/telemetry; JS/TS-family only for now.
-
-Real pinned Dirac smoke:
-
-- `dirac/src/services/tree-sitter/languageParser.ts`: TypeScript `program`, raw 5333 chars, outline 282 chars, signatures 582 chars, full JSON 4967 chars, outline/raw 0.053, signatures/raw 0.109, signatures/full JSON 0.117, no parse errors, 9 skeleton entries.
-- `dirac/src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`: TypeScript `program`, raw 7192 chars, outline 826 chars, signatures 1144 chars, full JSON 11063 chars, outline/raw 0.115, signatures/raw 0.159, signatures/full JSON 0.103, no parse errors, 20 skeleton entries.
-- `dirac/scripts/file-utils.mjs`: JavaScript `program`, raw 766 chars, outline 153 chars, signatures 281 chars, full JSON 2838 chars, outline/raw 0.200, signatures/raw 0.367, signatures/full JSON 0.099, no parse errors, 5 skeleton entries.
-
-Output size smoke from `npm run measure:output-size`:
-
-| File | Raw chars | Outline chars | Signatures chars | Full JSON chars | Outline/raw | Signatures/raw | Signatures/full JSON | Approx signature tokens | Parse errors | Entry count |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
-| `mcp-server/src/filesystem/file-skeleton.ts` | 28955 | 2628 | 8874 | 43813 | 0.091 | 0.306 | 0.203 | 2219 | false | 79 |
-| `mcp-server/src/tools/file-skeleton.ts` | 5046 | 493 | 824 | 5788 | 0.098 | 0.163 | 0.142 | 206 | false | 10 |
-| `dirac/src/services/tree-sitter/languageParser.ts` | 5333 | 282 | 582 | 4967 | 0.053 | 0.109 | 0.117 | 146 | false | 9 |
-| `dirac/src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts` | 7192 | 826 | 1144 | 11063 | 0.115 | 0.159 | 0.103 | 286 | false | 20 |
-| `dirac/scripts/file-utils.mjs` | 766 | 153 | 281 | 2838 | 0.200 | 0.367 | 0.099 | 71 | false | 5 |
-
-Additional output smoke:
-
-- `read_file` on `mcp-server/src/filesystem/file-skeleton.ts`: raw 28955 chars, read view 33756 chars (1.166 raw), edit view 43429 chars (1.500 raw), full JSON 236918 chars, edit/full JSON 0.183.
-- `search_files` over `mcp-server/src/**/*.ts` for `export|function|class|interface|type`: 200 matches in 4 files, matches view 10846 chars, files view 1361 chars, full JSON 47475 chars, matches/full JSON 0.228, files/full JSON 0.029, 54.2 chars/match.
-- `list_files` recursive on `mcp-server/src`: 27 entries, outline 1032 chars, full JSON 5024 chars, outline/full JSON 0.205, 38.2 chars/entry.
-
-Current caveats:
-
-- Compact views intentionally omit absolute paths, byte offsets, stable skeleton ids, repeated `containsParseErrors: false`, and duplicated per-line text arrays. Request `view: "full"` when those fields are needed.
-- Imports and export-only statements are top-level structural entries; exported declarations are represented by the exported definition signature rather than a separate wrapper entry.
-- `limit` truncates entries in preorder and preserves deterministic shape, but very large files still fail at the 1MB parse safety cap.
-- Constructor handling is now consistent for JS and TS: constructors appear as method entries nested under their class.
-- Import and re-export sub-kinds remain conservative; richer `import:type`, namespace import, and re-export classification can be added later without changing the core entry model.
-
-## Shared Tree-Sitter Runtime
-
-Status: production-ready shared foundation for `get_file_skeleton` and future `get_function` ports.
-
-- Internal API: `src/tree-sitter/runtime.ts`.
-- Supported initial language set: JavaScript-family `.js`, `.jsx`, `.mjs`, `.cjs`; TypeScript-family `.ts`, `.tsx`.
-- Dependencies: exact `web-tree-sitter@0.22.6` and `tree-sitter-wasms@^0.1.13`. `web-tree-sitter` is pinned to the upstream Dirac-compatible 0.22.6 release because 0.26 could not load the `tree-sitter-wasms@0.1.13` grammar binaries.
-- Query assets: MCP-owned `.scm` files in `src/tree-sitter/queries/` for JavaScript and TypeScript. They are copied to `dist/tree-sitter/assets/queries/` during `npm run build`.
-- WASM assets: build copies `node_modules/web-tree-sitter/tree-sitter.wasm` plus `tree-sitter-javascript.wasm`, `tree-sitter-typescript.wasm`, and `tree-sitter-tsx.wasm` from `tree-sitter-wasms/out/` into `dist/tree-sitter/assets/wasm/`.
-- Asset resolution is Windows-safe and uses `import.meta.url`/`fileURLToPath`, `createRequire(import.meta.url)`, `path.join`, and explicit candidate roots. It does not depend on process cwd. Source/test execution resolves source queries plus package WASM fallback; built execution can run with `includeNodeModulesFallback: false` and resolve only from `dist`.
-- Parser API returns typed parse results with language handle, query, tree, root node type, source length, asset paths, parse-error flag, and `dispose()` for tree cleanup. It deliberately does not expose the mutable `Parser` instance. Unsupported extensions and missing/init/language/query/parse failures produce explicit `TreeSitterRuntimeError` codes and concise messages.
-- Built-output smoke script: `dist/tree-sitter/smoke.js` after `npm run build`; it imports built JS, parses supplied files using only copied `dist` assets for the parser smoke, and runs `get_file_skeleton` from built output.
-
-Current caveats:
-
-- Query assets are intentionally minimal compatibility queries for the initial JS/TS foundation. Full Dirac query parity for all upstream languages remains future work.
-- AST skeleton extraction is ported through `get_file_skeleton`. AST anchor formatting, function lookup, symbol range lookup, and symbol index remain unported.
-
-## Tool Status Table
-
-Status meanings:
-
-- `not_started`: not ported yet.
-- `in_progress`: active session started but not complete.
-- `blocked`: needs a decision or missing dependency.
-- `ported`: implementation exists but verification is incomplete.
-- `done`: implemented, callable, verified, and documented.
-
-| Tool | Status | Priority | Production Status | Dirac Parity / Notes | Next Action |
-| --- | --- | --- | --- | --- | --- |
-| `list_files` | `done` | P0 | Production-ready under MCP scope | Core listing behavior ported. `view: "outline"` is default; full structured JSON is explicit. No line counts/mtimes, no `.diracignore`, hidden non-git paths visible. | Maintain only. |
-| `search_files` | `done` | P0 | Production-ready under MCP scope | Core ripgrep behavior ported. `view: "matches"` is default, `view: "files"` groups high match counts, full structured JSON is explicit. Hidden/dot path exclusion, byte columns, first-submatch behavior, no anchors, no `.diracignore`, system `rg`. | Maintain only. |
-| `read_file` | `done` | P0 | Production-ready under MCP text-file scope | Multi-path text reads, line ranges, FNV file hashes, edit-file compatibility metadata, deterministic session-scoped anchors, workspace safety, output caps, and MCP tests. `view: "read"` omits anchors by default; `view: "edit"` is required before `edit_file`; full per-line structured JSON is explicit. Rich file extraction deferred. | Maintain; use anchors as the baseline for later edit design. |
-| `get_file_skeleton` | `done` | P1 | Production-ready under MCP JS/TS AST scope | `view: "signatures"` is default, `view: "outline"` is cheaper navigation, full structured JSON is available with `view: "full"`. Non-edit locations instead of anchors, no call graph comments, no `.diracignore`, JS/TS-family only. | Maintain; use as foundation for `get_function`. |
-| `get_function` | `not_started` | P1 | Not available as an MCP tool | Shared tree-sitter runtime/assets and skeleton extraction patterns are ready for JS/TS. Still needs function range/name matching, context/anchors, output schema, and MCP tests. | Start next using `get_file_skeleton` patterns. |
-| `edit_file` | `done` | P1 | Production-ready under single-file MCP text/code scope | Anchor-first exact replacement ported and hardened with full-file hash freshness. Compact edit summary is default; full applied-edit JSON is explicit. Intentional differences: single file, replace-only `{ anchor, oldText, newText }`, deterministic diff summary, no Dirac UI/approval/diagnostics/multi-file flow. | Maintain only. |
-| `find_symbol_references` | `not_started` | P2 | Not available | Requires symbol index and SQLite WASM or a deliberate alternative. | Defer. |
-| `replace_symbol` | `not_started` | P2 | Not available | Requires AST range resolution and mutation flow. | Defer until edit stack exists. |
-| `rename_symbol` | `not_started` | P2 | Not available | Requires symbol index and careful multi-file diff/reporting. | Defer. |
-| `diagnostics_scan` | `not_started` | P3 | Not available | Dirac version is host/integration-heavy. | Optional later. |
-| `execute_command` | `not_started` | P3 | Not available | Powerful and risky. Needs explicit sandbox/permission policy before exposing. | Do not port without policy. |
-
-## Technical Decisions
-
-- Build a new MCP server instead of trying to run Dirac's `ToolExecutor`.
-- Reuse or port Dirac's pure logic where possible; replace UI callbacks with MCP responses or MCP errors.
-- Remove/no-op telemetry, approval UI, task workflow, webview behavior, provider/auth flow, and VS Code host behavior.
-- Keep tool APIs close to Dirac schemas unless MCP has a clear reason to differ.
-- Work in `mcp-server/` for implementation. Treat `dirac/` as read-only.
-- Use TypeScript `NodeNext`, strict mode, ESM, and explicit `.js` import specifiers.
-- Keep server creation separate from stdio startup so tests can instantiate the server with in-memory transports.
-- Runtime context is intentionally slim: `cwd`, `sessionId`, `workspaceRoots`.
-- Path resolution accepts relative paths against `RuntimeContext.cwd`; absolute paths are allowed only when inside configured workspace roots. Sibling-prefix escapes and traversal are rejected.
-- `read_file` additionally rejects symlinks and verifies real paths stay inside the resolved workspace root before reading.
-- Anchor state is in-memory and session-scoped by `RuntimeContext.sessionId`. It is deterministic for reproducibility in tests and MCP sessions, unlike Dirac's randomized dictionary-word anchors.
-- `edit_file` consumes existing edit-ready `read_file` anchor state without reconciling first. Default `read_file` output records freshness but is not edit-ready; callers must request `view: "edit"` before mutation. `edit_file` first requires the current normalized full-file hash to match the stored same-session snapshot from the last edit-ready `read_file` or successful `edit_file`. Hash mismatches are stale and rejected before any write, including same-line-count edits. If the hash matches, the anchor's tracked start line must still contain exact `oldText`.
-- `edit_file` uses logical LF text for validation and deterministic diff output, then writes with the file's existing dominant EOL and preserves whether the file ended with a newline.
-- `read_file` reports whether each file is currently within the `edit_file` mutation cap so agents can avoid planning an unsupported edit after a successful ranged read.
-- Legacy `format: "compact" | "json"` remains as an alias for compatibility, but new callers should use `view` to avoid conflating verbosity, serialization, edit affordance, and metadata richness.
-- `.diracignore` support is deferred. Current protection is workspace-root containment plus built-in generated/hidden skips per tool.
-- `search_files` depends on system `rg` being available on `PATH`. Do not silently add a bundled binary without documenting packaging and licensing implications.
-- Tree-sitter uses exact `web-tree-sitter@0.22.6` with `tree-sitter-wasms@^0.1.13`, matching upstream Dirac compatibility. Build-time asset copying is explicit through `scripts/copy-tree-sitter-assets.mjs`.
-- Built tree-sitter runtime must continue to work without reaching back into `node_modules`; verify with `node dist/tree-sitter/smoke.js <files>` after `npm run build` when changing parser assets/runtime.
-
-## Known Residual Risks
-
-- `.diracignore` is not implemented, so ignore behavior is not full Dirac parity.
-- `read_file` supports text/code files only. PDF, DOCX, XLSX, notebook, and image extraction are intentionally deferred until the standalone server has packaged dependencies and verification fixtures.
-- `edit_file` rejects any file-hash drift as stale instead of trying to reconcile before applying. This is conservative and may reject safe unrelated edits until the caller rereads the file, but it catches same-line-count external and cross-session changes before mutation.
-- `edit_file` supports single-file anchored replacement only. Multi-file batching, insert-specific operations, and end-anchor ranges are intentionally deferred.
-- Files larger than 1MB can be inspected with ranged `read_file` but cannot be mutated with `edit_file`; `read_file` reports this through `editFileCompatibility`.
-- `read_file` reorder/move preservation is intentionally conservative: ordered unchanged subsequences keep anchors, but lines moved out of order may receive fresh anchors to avoid stale-anchor reuse.
-- `search_files` uses system `rg`; environments without ripgrep get a clear error but cannot search.
-- `search_files` structured output lacks Dirac's formatted hash-anchored lines.
-- `list_files` intentionally differs from Dirac by not returning line counts or mtimes.
-- Tree-sitter foundation currently packages JS/TS/TSX WASM and JS/TS query assets only. Additional languages need deliberate query and grammar smoke coverage before exposure.
-- `get_file_skeleton` entry ids and locations are not edit anchors. Agents must use `read_file` before `edit_file`.
-- `get_file_skeleton` does not compute Dirac call graph comments and does not integrate `.diracignore`.
-- Tree-sitter queries are minimal `.scm` compatibility assets and are not yet full upstream Dirac parity across all languages or call-graph captures.
-- Editing tools need a headless design for direct writes, diff output, approval policy, diagnostics, and anchor drift.
-- Symbol-index tools need a persistence decision for `.dirac-symbol-index` versus session-scoped state.
+- `.diracignore` gap: standalone ignore behavior is not full Dirac parity. Mitigation: workspace-root containment plus built-in generated/hidden skips. Trigger to revisit: user needs project-specific ignore rules.
+- Rich file extraction gap: `read_file` supports text/code only. Mitigation: explicit unsupported-file errors. Trigger to revisit: consumer needs PDF/DOCX/XLSX/notebook/image extraction.
+- Edit scope gap: `edit_file` is single-file replace-only. Mitigation: strict anchored validation and no-partial-write behavior. Trigger to revisit: consumer needs multi-file or insert-specific edits.
+- Anchor lifecycle: anchors are in-memory and session-scoped. Mitigation: `edit_file` requires prior `read_file view: "edit"` and rejects stale hashes. Trigger to revisit: long-lived server sessions need cleanup or persistence.
+- Tree-sitter language scope: only JS/TS/TSX assets and queries are packaged. Mitigation: fail unsupported extensions clearly. Trigger to revisit: porting non-JS/TS AST tools.
+- Symbol index: persistence model is undecided. Mitigation: defer symbol tools. Trigger to revisit: starting `find_symbol_references` or `rename_symbol`.
+- Command execution: no permission model exists. Mitigation: keep unported. Trigger to revisit: explicit sandbox policy is designed.
 
 ## Verification Commands
 
-Run from `c:\project\lamviec\dirac-mcp\mcp-server` when changing runtime/source/tests:
+Run from `c:\project\lamviec\dirac-mcp\mcp-server` after runtime/source/test changes:
 
 ```powershell
 npm run build
@@ -250,7 +117,20 @@ npm run lint
 npm run typecheck
 ```
 
-Docs-only sessions do not need the full suite unless they make or verify behavior claims. Always run:
+Run output-size smoke when changing output contracts or token behavior:
+
+```powershell
+npm run measure:output-size
+```
+
+Run tree-sitter built-output smoke when changing parser assets/runtime or AST tools:
+
+```powershell
+npm run build
+node dist/tree-sitter/smoke.js ..\dirac\src\services\tree-sitter\languageParser.ts ..\dirac\scripts\file-utils.mjs
+```
+
+Run from repo root before finishing any session:
 
 ```powershell
 git status --short --branch
@@ -259,59 +139,124 @@ Test-Path mcp-server/dist
 git diff --stat
 ```
 
-If `npm run build` creates `mcp-server/dist/`, remove it before finishing:
+If `mcp-server/dist/` exists after verification:
 
 ```powershell
 Remove-Item -Recurse -Force mcp-server/dist
 ```
 
-## Next Recommended Sessions
+Docs-only sessions do not need the full npm suite unless they make or verify behavior claims. They still need repo status, submodule, dist, and diff checks.
 
-1. Port `get_function`.
-   - Reuse the same parser/query runtime and integrate deterministic MCP anchors deliberately.
-   - Use the `get_file_skeleton` safety checks, structured output style, real-repo smoke pattern, and built-output smoke path as the baseline.
+## Benchmarks Current
 
-## Future Sessions Must Avoid
+Measured on 2026-04-30 with `npm run measure:output-size`. True MCP-visible size is `content` chars plus `JSON.stringify(structuredContent).length`. Approximate tokens use `ceil(chars / 4)`.
 
+| Scenario | Raw chars | Compact total chars | Full total chars | Ratio |
+| --- | ---: | ---: | ---: | --- |
+| `read_file view:"read"` on `mcp-server/src/filesystem/file-skeleton.ts` | 28,955 | 31,646 | 379,452 | 1.093x raw / 0.083x full |
+| `read_file view:"edit"` on same file | 28,955 | 36,943 | 379,452 | 1.276x raw / 0.097x full |
+| `get_file_skeleton view:"outline"` on same file | 28,955 | 2,872 | 72,100 | 0.099x raw / 0.040x full |
+| `get_file_skeleton view:"signatures"` on same file | 28,955 | 9,121 | 72,100 | 0.315x raw / 0.127x full |
+| React/TSX generic fixture signatures | 2,511 | 1,752 | 11,294 | 0.698x raw / 0.155x full |
+| `search_files view:"matches"` over `mcp-server/src/**/*.ts` | n/a | 10,913 | 84,924 | 0.129x full |
+| `search_files view:"files"` over same query | n/a | 1,429 | 84,924 | 0.017x full |
+| `list_files view:"outline"` on `mcp-server/src` | n/a | 1,093 | 9,114 | 0.120x full |
+
+Edit workflow tax on `mcp-server/src/filesystem/file-skeleton.ts`:
+
+| Exploratory reads before edit | Old always-edit-ready chars | New read-then-reread-edit chars | Result |
+| ---: | ---: | ---: | --- |
+| 1 | 36,943 | 68,589 | old-style cheaper by 31,646 |
+| 3 | 110,829 | 131,881 | old-style cheaper by 21,052 |
+| 5 | 184,715 | 195,173 | old-style cheaper by 10,458 |
+
+For this file, the new workflow becomes cheaper at about seven exploratory reads before one edit. Use `read_file view: "edit"` immediately when editing is likely.
+
+## Next Sessions
+
+1. Port `get_function`: reuse tree-sitter runtime, skeleton extraction patterns, compact output views, and real-repo smoke discipline. Design default output around targeted function context, with an explicit edit-ready view if anchors are needed.
+2. Audit `.diracignore` needs: decide whether standalone tools need project ignore files or built-in skips remain enough.
+3. Consider `edit_file` insert/end-anchor extensions: only after `get_function` clarifies range/edit workflows.
+4. Plan symbol index persistence: required before references/rename tools.
+5. Design command execution policy: required before any `execute_command` exposure.
+
+## Anti-Patterns
+
+- Do not paraphrase tool contracts outside README.
+- Do not put upstream source maps or Dirac architecture in this tracker.
+- Do not keep benchmark history in Markdown; git history has old measurements.
+- Do not mark a tool production-ready until it is MCP-callable, tested, documented, and verified.
+- Do not mark behavior done because it works on one fixture.
+- Do not claim parity with Dirac without reading the upstream source.
+- Do not hide host-specific Dirac behavior behind MCP stubs.
+- Do not leave `mcp-server/dist/` after builds.
 - Do not edit upstream `dirac/` files.
-- Do not port more than one tool or one small shared dependency per implementation session.
-- Do not add `read_file` or any new tool during documentation-only sessions.
-- Do not commit generated artifacts, especially `mcp-server/dist/`.
-- Do not expose `execute_command` without a deliberate sandbox/permission policy.
-- Do not mark a tool `done` until it is MCP-callable, tested, documented, and verified.
-- Do not push unless explicitly asked.
+- Do not bypass workspace path checks for convenience.
+- Do not silence a failing real-repo smoke; investigate or revert.
+- Do not expand scope during a tool port because adjacent tool code is nearby.
+- Do not add generated artifacts, runtime indexes, logs, or coverage to git.
+
+## Decisions Log
+
+- 2026-04-29: Build a standalone MCP server instead of trying to boot Dirac's `ToolExecutor`. Reason: upstream handlers depend on VS Code/UI/telemetry/task services that do not fit headless MCP.
+- 2026-04-29: Keep transport stdio-first. Reason: no real HTTP/SSE consumer exists.
+- 2026-04-29: Treat `dirac/` as a pinned read-only submodule. Reason: preserves upstream reference integrity.
+- 2026-04-29: Use TypeScript NodeNext ESM and explicit `.js` imports. Reason: matches runtime package expectations and avoids ambiguous module resolution.
+- 2026-04-29: Keep runtime context slim: cwd, session id, workspace roots. Reason: isolates MCP tools from Dirac host state.
+- 2026-04-29: Use workspace-root containment and realpath/symlink rejection for file reads/edits. Reason: direct filesystem tools need explicit safety boundaries.
+- 2026-04-29: Use deterministic session-scoped anchors instead of Dirac random dictionary words. Reason: reproducible MCP tests and stable sessions.
+- 2026-04-29: Make `edit_file` conservative: require exact oldText, non-overlap, same-session anchors, full-file hash freshness, and no partial writes. Reason: direct filesystem mutation has no host approval UI.
+- 2026-04-29: Keep `edit_file` single-file replace-only initially. Reason: reduces blast radius while preserving core anchored edit behavior.
+- 2026-04-29: Defer `.diracignore`. Reason: workspace containment plus built-in skips are enough for current tools.
+- 2026-04-29: Use system `rg` for `search_files`. Reason: avoids bundling/licensing decisions until necessary.
+- 2026-04-29: Pin `web-tree-sitter@0.22.6` with `tree-sitter-wasms@^0.1.13`. Reason: newer `web-tree-sitter` failed to load the selected grammar binaries.
+- 2026-04-29: Copy tree-sitter runtime, grammar WASM, and query assets into `dist`. Reason: built output must not depend on source-tree assets.
+- 2026-04-29: Start AST tooling with `get_file_skeleton`. Reason: validates parser/query/output integration before narrower function lookup.
+- 2026-04-30: Make compact task-oriented views the default and keep full JSON explicit. Reason: tool output should reduce model context, not exceed raw file reads.
+- 2026-04-30: Replace `format` as the primary API with `view`, while keeping `format` aliases. Reason: `view` separates task intent from serialization/detail level.
+- 2026-04-30: Require `read_file view: "edit"` before `edit_file`. Reason: default reads should be cheap, while edit anchors are paid only when mutation is intended.
+- 2026-04-30: Use `A` plus 6 base-36 anchor ids with retry/checking. Reason: reduces edit-view token cost while keeping session/file uniqueness invariants.
+- 2026-04-30: Measure true MCP-visible payload as content plus structuredContent JSON. Reason: many clients expose both channels to models.
+- 2026-04-30: Keep documentation split by role: README contract, tracker state, notes upstream research. Reason: prevents drift and reduces session resume cost.
 
 ## Session Log
 
-Keep this short. Preserve useful history, but do not turn this tracker into a transcript.
+### Recent Sessions
 
-| Date | Session Goal | Status | Verification | Notes |
-| --- | --- | --- | --- | --- |
-| 2026-04-29 | Clone Dirac and map tool porting strategy | `done` | Manual repo inspection | Confirmed no existing Dirac MCP runtime; chose standalone MCP server. |
-| 2026-04-29 | Scaffold MCP server and normalize repo hygiene | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; git/submodule checks | Created `mcp-server/`, npm TypeScript MCP SDK foundation, root git hygiene, and pinned `dirac/` submodule. No Dirac tool ported. |
-| 2026-04-29 | Port and harden `list_files` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP in-memory smoke | Added workspace path guard, deterministic listing, generated-directory and `.git` skips, symlink skip, limit validation/clamping, dedupe, concise errors, and MCP smoke coverage. |
-| 2026-04-29 | Standardize MCP tool registration/responses | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added `registerTools` and shared structured success/error helpers. No new Dirac tool ported. |
-| 2026-04-29 | Port and harden `search_files` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP in-memory smoke | Added system-ripgrep search, workspace guarding, hidden/generated path skips, bounded structured output, invalid-regex/missing-rg errors, byte-column and first-submatch caveat tests. |
-| 2026-04-29 | Real-repo smoke and parity audit for `list_files` / `search_files` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP smoke against `dirac/` | Re-read upstream handlers/core services, confirmed no runtime fixes needed, added parity/edge regression coverage, and fixed submodule-style `.git` listing leak. |
-| 2026-04-29 | Consolidate documentation for handoff clarity | `done` | Docs-only git/submodule/dist checks | Reorganized tracker as the operational source of truth and upstream notes as reference material. No code changed and no new Dirac tool ported. |
-| 2026-04-29 | Port and harden `read_file` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP smoke against `dirac/` | Added text/code reads, line ranges, deterministic session anchors, FNV file hashes, workspace/realpath safety, bounded output, domain/MCP coverage, and explicit rich-file deferrals. Smoke: `README.md` 8ms/13900 chars, handler range 3ms/4979 chars, ripgrep range 2ms/1499 chars, friendly errors for `..`, missing file, and directory. |
-| 2026-04-29 | Harden `read_file` anchor reconciliation | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Replaced hash-bucket preservation with ordered LCS-style reconciliation, added duplicate/reorder/session/edit-contract tests, documented deterministic anchor behavior and future `edit_file` assumptions. No new tool ported. |
-| 2026-04-29 | Port single-file anchored `edit_file` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; MCP in-memory smoke | Added `{ path, edits: [{ anchor, oldText, newText }] }`, exact oldText validation, stale/overlap/no-partial-write protection, deterministic diff summary, line-ending preservation, anchor refresh after write, domain/MCP/smoke coverage. No other tool ported. |
-| 2026-04-29 | Harden anchored `edit_file` freshness | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added stored full-file hash snapshots to anchor state, stale hash rejection before writes, restart/reset no-anchor coverage, same-line-count external/cross-session tests, documented 1MB edit mutation cap. No new tool ported. |
-| 2026-04-29 | Surface edit mutation cap during reads | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck` | Added `read_file` edit-file compatibility metadata/warnings for files over the 1MB mutation cap and improved oversized `edit_file` error guidance. No new tool ported. |
-| 2026-04-29 | Prepare tree-sitter runtime and assets | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; built `dist` smoke against pinned Dirac files | Added exact `web-tree-sitter@0.22.6`, `tree-sitter-wasms@^0.1.13`, MCP-owned JS/TS `.scm` queries, build asset copy script, reusable parser runtime, parser tests, and built-output smoke. Smoke: `dirac/src/services/tree-sitter/languageParser.ts` TypeScript `program`, 5333 chars, no parse errors; `dirac/scripts/file-utils.mjs` JavaScript `program`, 766 chars, no parse errors; all assets loaded from `dist`. No MCP tree-sitter tool ported. Follow-up hardening removed cwd-relative package lookup, removed empty asset-root trick, added process-global init guard, simplified query cache keys, stopped exposing mutable parser instances, and added tree disposal/test coverage. |
-| 2026-04-29 | Port AST-backed `get_file_skeleton` | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; built `dist` smoke against pinned Dirac files | Added safe file loading, structured skeleton extraction, MCP registration, hard fixture tests, MCP in-memory smoke, real Dirac repo smoke, and docs. Follow-up hardening added stable entry ids, qualified names, anonymous default exports, JS/TS constructor parity, body-field signature extraction, raw UTF-8 byte offsets, signature truncation flags, and per-entry parse-error metadata. Real smoke: `languageParser.ts` 5333 chars/9 entries/no parse errors; `GetFileSkeletonToolHandler.ts` 7192 chars/20 entries/no parse errors; `file-utils.mjs` 766 chars/5 entries/no parse errors. Locations are non-edit metadata; use `read_file` for anchors. |
-| 2026-04-30 | Compact default MCP tool outputs | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; `npm run measure:output-size` | Added legacy `format: "compact" | "json"` across existing tools, made compact default responses lean, preserved full rich JSON on demand, added output size smoke. Follow-up in same date replaced this with task-oriented `view` modes while keeping `format` as an alias. |
-| 2026-04-30 | Refine token-efficient views after design review | `done` | `npm run build`; `npm run test`; `npm run lint`; `npm run typecheck`; `npm run measure:output-size` | Added `view` modes: list `outline/full`, search `matches/files/full`, read `read/edit/full`, edit `summary/full`, skeleton `outline/signatures/full`. `read_file` default no longer emits anchors; `edit_file` requires prior `read_file` with `view: "edit"`. Skeleton outline/signatures are tighter, imports/exports are grouped, signatures are bounded by `maxSignatureChars`, and measurements now cover skeleton/read/search/list. Key ratios: skeleton implementation outline/raw 0.091, signatures/raw 0.306, signatures/full JSON 0.203; Dirac `languageParser.ts` 0.053/0.109/0.117; search files view/full JSON 0.029; list outline/full JSON 0.205. Next recommended session remains `get_function`. |
+- 2026-04-30 - docs architecture cleanup - rewrote README/TRACKER/NOTES by canonical role: contract, live state, upstream research. Next: review diffs, then port `get_function`.
+- 2026-04-30 - output view calibration - measured true MCP-visible payloads, tightened `read_file` views to 1.093x/1.276x raw, documented anchor entropy, added wrong-view edit metadata and React/TSX signature coverage. Next: `get_function`.
+- 2026-04-30 - token-efficient views - added `view` modes for all current tools, compact defaults, full JSON modes, `format` aliases, and output-size measurement. Next: calibrate defaults.
+- 2026-04-29 - `get_file_skeleton` - ported AST-backed JS/TS skeleton tool, added safe loading, compact/full views, hard fixtures, MCP smoke, built smoke, and pinned Dirac repo smoke. Next: compact outputs.
+- 2026-04-29 - tree-sitter runtime - added `web-tree-sitter`/WASM asset strategy, copy script, parser API, tests, and built-output smoke. Next: skeleton tool.
 
-## Session Completion Template
+### Older Sessions
+
+- 2026-04-29 - setup - cloned Dirac, chose standalone MCP architecture, scaffolded `mcp-server/`, pinned submodule, normalized git hygiene.
+- 2026-04-29 - `list_files` - ported and hardened workspace-safe deterministic listing.
+- 2026-04-29 - tool responses - added shared tool registration and structured success/error helpers.
+- 2026-04-29 - `search_files` - ported ripgrep-backed search with generated/hidden skips and bounded output.
+- 2026-04-29 - parity audit - smoked list/search against `dirac/` and fixed submodule-style `.git` leak.
+- 2026-04-29 - docs handoff - reorganized tracker and notes for early session continuity.
+- 2026-04-29 - `read_file` - ported text reads, ranges, hashes, anchors, workspace safety, output caps, and rich-file deferrals.
+- 2026-04-29 - anchor reconciliation - replaced hash-bucket preservation with ordered LCS-style reconciliation and duplicate/reorder tests.
+- 2026-04-29 - `edit_file` - ported single-file anchored replacement, exact validation, stale/overlap protection, line-ending preservation, and anchor refresh.
+- 2026-04-29 - edit freshness - added stored full-file hash snapshots and stale hash rejection.
+- 2026-04-29 - edit cap metadata - exposed read-time edit compatibility and oversized edit guidance.
+
+## Session Completion Checklist
+
+Use this at the end of each session:
 
 ```text
 Session:
-Tool/dependency:
-Status: not_started | in_progress | blocked | ported | done
+Area/tool:
+Status: production-ready | partial | not-started
 Files changed:
+Contract changes:
 Tests/verification:
-Remaining work:
-Next recommended session:
+Benchmarks/smoke:
+Docs updated:
+Dist removed:
+Remaining risks:
+Next recommended task:
 ```

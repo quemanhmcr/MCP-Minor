@@ -84,13 +84,21 @@ describe("edit_file MCP tool", () => {
         name: "edit_file",
         arguments: {
           path: "src/file.ts",
-          edits: [{ anchor: "A00000000", oldText: "alpha", newText: "ALPHA" }],
+          edits: [{ anchor: "A000000", oldText: "alpha", newText: "ALPHA" }],
         },
       });
 
       expect(result.isError).toBe(true);
       const content = result.content as Array<{ type: string; text: string }>;
-      expect(content[0]?.text).toBe('Path \'src/file.ts\' was last read without edit anchors. Call read_file with view: "edit" before edit_file.');
+      expect(content[0]?.text).toBe(
+        'Path \'src/file.ts\' was last read without edit anchors. Call read_file with view: "edit" for this path, then retry edit_file with the returned anchors.',
+      );
+      expect(result.structuredContent).toEqual({
+        code: "MUST_REREAD_FOR_EDIT",
+        relativePath: "src/file.ts",
+        requiredView: "edit",
+        suggestedAction: "call read_file with view: 'edit' for this path, then retry edit_file with the returned anchors",
+      });
     } finally {
       await client.close();
       await server.close();
@@ -203,13 +211,17 @@ describe("edit_file MCP tool", () => {
       });
 
       expect(result.isError).toBe(true);
-      expect(result.structuredContent).toBeUndefined();
       expect(result.content).toEqual([
         {
           type: "text",
-          text: 'Path \'src/file.ts\' has no edit-ready anchor state. Call read_file with view: "edit" before edit_file.',
+          text: 'Path \'src/file.ts\' has no edit-ready anchor state. Call read_file with view: "edit" for this path, then retry edit_file with the returned anchors.',
         },
       ]);
+      expect(result.structuredContent).toMatchObject({
+        code: "MUST_REREAD_FOR_EDIT",
+        relativePath: "src/file.ts",
+        requiredView: "edit",
+      });
     } finally {
       await client.close();
       await server.close();
@@ -224,7 +236,7 @@ describe("edit_file MCP tool", () => {
         name: "edit_file",
         arguments: {
           path: "..",
-          edits: [{ anchor: "A00000000", oldText: "x", newText: "y" }],
+          edits: [{ anchor: "A000000", oldText: "x", newText: "y" }],
         },
       });
 

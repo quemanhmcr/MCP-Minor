@@ -1,242 +1,130 @@
-# Dirac Tool Porting Notes
+# Dirac Upstream Notes
 
-Upstream research/reference note for the standalone MCP port. Use `PROJECT_PORTING_TRACKER.md` for current status, session history, and operational rules.
+This file contains durable upstream Dirac research for future ports. It does not track current MCP implementation status; use [PROJECT_PORTING_TRACKER.md](PROJECT_PORTING_TRACKER.md) for live status and [README.md](README.md) for MCP tool contracts.
 
-Repo cloned: `dirac-run/dirac`
-Local path: `c:\project\lamviec\dirac-mcp\dirac`
+Upstream repo: `dirac-run/dirac`
+Local submodule: `dirac/`
 Pinned source commit: `e827ec30d4cdae078588df2040f203b780d657ad`
 
-## Upstream Dirac Architecture
+## Upstream Architecture Overview
 
-Dirac is a TypeScript coding agent forked from Cline. It ships as:
+Dirac is a TypeScript coding agent forked from Cline. It ships primarily as a VS Code extension, with a CLI package under `cli/` and shared core/services under `src/`.
 
-- VS Code extension from repo root.
-- CLI package under `cli/`.
-- Shared core under `src/core`, `src/services`, `src/utils`, and `src/shared`.
+Tool definitions and prompt-facing schemas are separate from execution. Tool schema files live under `src/core/prompts/system-prompt/tools/`, while execution flows through task/tool handler classes under `src/core/task/tools/`.
 
-Upstream Dirac does not expose a usable MCP server runtime. The standalone MCP package should treat Dirac's tool schemas and service logic as source material, not as a framework to boot directly.
+Dirac handlers assume host services that a standalone MCP server does not have: UI callbacks, approval state, telemetry, VS Code diff views, diagnostics, browser/session state, command execution, provider/auth state, task state, and ignore controllers. MCP ports should extract pure behavior and replace host concerns with explicit MCP responses, errors, or configuration.
 
-Schema layer:
+The upstream repo does not expose a reusable MCP server runtime. Treat Dirac as source material, not as a framework to boot directly.
 
-- `src/core/prompts/system-prompt/tools/*.ts`
-- `src/core/prompts/system-prompt/tools/init.ts`
-- `src/core/prompts/system-prompt/registry/DiracToolSet.ts`
-- `src/core/prompts/system-prompt/spec.ts`
-- `src/shared/tools.ts`
+## Source Map
 
-Execution layer:
+| Capability | Upstream paths | Notes |
+| --- | --- | --- |
+| Tool schemas | `src/core/prompts/system-prompt/tools/*.ts`, `src/core/prompts/system-prompt/tools/init.ts`, `src/core/prompts/system-prompt/registry/DiracToolSet.ts`, `src/core/prompts/system-prompt/spec.ts`, `src/shared/tools.ts` | Prompt-facing contracts and registry wiring. |
+| Tool execution | `src/core/task/ToolExecutor.ts`, `src/core/task/tools/ToolExecutorCoordinator.ts`, `src/core/task/tools/handlers/*.ts`, `src/core/task/tools/types/TaskConfig.ts`, `src/core/task/tools/ToolValidator.ts` | Handler code depends heavily on task/host services. |
+| File listing | `src/core/prompts/system-prompt/tools/list_files.ts`, `src/core/task/tools/handlers/ListFilesToolHandler.ts`, `src/services/glob/list-files.ts` | Upstream integrates glob/gitignore-style behavior. |
+| Search | `src/core/prompts/system-prompt/tools/search_files.ts`, `src/core/task/tools/handlers/SearchFilesToolHandler.ts`, `src/services/ripgrep/index.ts` | Upstream locates a bundled/known `rg`. |
+| File read/extract | `src/core/prompts/system-prompt/tools/read_file.ts`, `src/core/task/tools/handlers/ReadFileToolHandler.ts`, `src/integrations/misc/extract-file-content.ts` | Supports text plus richer file extraction through dependencies. |
+| Anchors | `src/utils/AnchorStateManager.ts`, `src/utils/line-hashing.ts`, `src/shared/utils/line-hashing.ts`, `src/utils/.hash_anchors` | Upstream anchor ids are randomized dictionary words scoped by task state. |
+| Editing | `src/core/prompts/system-prompt/tools/edit_file.ts`, `src/core/task/tools/handlers/EditFileToolHandler.ts`, `src/core/task/tools/handlers/edit-file/BatchProcessor.ts`, `src/core/task/tools/handlers/edit-file/EditExecutor.ts`, `src/core/task/tools/handlers/edit-file/EditFormatter.ts`, `src/core/task/tools/handlers/edit-file/types.ts` | `EditExecutor` is the cleanest pure edit component; `BatchProcessor` mixes host UI/diff/diagnostics. |
+| AST skeleton/function | `src/core/prompts/system-prompt/tools/get_file_skeleton.ts`, `src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`, `src/core/prompts/system-prompt/tools/get_function.ts`, `src/core/task/tools/handlers/GetFunctionToolHandler.ts`, `src/utils/ASTAnchorBridge.ts`, `src/services/tree-sitter/index.ts`, `src/services/tree-sitter/languageParser.ts`, `src/services/tree-sitter/queries/*.ts` | AST tools depend on tree-sitter parsing, query captures, and upstream anchor bridge behavior. |
+| Symbol index | `src/core/prompts/system-prompt/tools/find_symbol_references.ts`, `src/core/task/tools/handlers/FindSymbolReferencesToolHandler.ts`, `src/core/task/tools/handlers/ReplaceSymbolToolHandler.ts`, `src/core/task/tools/handlers/RenameSymbolToolHandler.ts`, `src/services/symbol-index/SymbolIndexService.ts`, `src/services/symbol-index/SymbolIndexDatabase.ts`, `src/services/symbol-index/sql-wasm.wasm` | Upstream uses SQLite WASM and workspace index storage. |
+| Workspace/path | `src/core/workspace/WorkspaceResolver.ts`, `src/core/workspace/WorkspacePathAdapter.ts`, `src/core/workspace/utils/parseWorkspaceInlinePath.ts`, `src/core/ignore/DiracIgnoreController.ts`, `src/utils/path.ts`, `src/utils/fs.ts` | MCP needs explicit workspace-root containment instead of VS Code workspace assumptions. |
 
-- `src/core/task/ToolExecutor.ts`
-- `src/core/task/tools/ToolExecutorCoordinator.ts`
-- `src/core/task/tools/handlers/*.ts`
-- `src/core/task/tools/types/TaskConfig.ts`
-- `src/core/task/tools/ToolValidator.ts`
+## Porting Dependency Graph
 
-Important porting implication: handlers depend on `TaskConfig`, which carries UI callbacks, telemetry, approval state, workspace resolution, ignore rules, diff view, diagnostics, browser/session state, command runner, and task state. MCP ports should extract pure behavior and replace those host concerns with explicit MCP responses, errors, or configuration.
-
-## Useful Source Files
-
-Read-only filesystem/search:
-
-- `src/core/prompts/system-prompt/tools/list_files.ts`
-- `src/core/task/tools/handlers/ListFilesToolHandler.ts`
-- `src/services/glob/list-files.ts`
-- `src/core/prompts/system-prompt/tools/search_files.ts`
-- `src/core/task/tools/handlers/SearchFilesToolHandler.ts`
-- `src/services/ripgrep/index.ts`
-
-Read file and anchors:
-
-- `src/core/prompts/system-prompt/tools/read_file.ts`
-- `src/core/task/tools/handlers/ReadFileToolHandler.ts`
-- `src/integrations/misc/extract-file-content.ts`
-- `src/utils/AnchorStateManager.ts`
-- `src/utils/line-hashing.ts`
-- `src/shared/utils/line-hashing.ts`
-- `src/utils/.hash_anchors`
-
-AST and symbol tools:
-
-- `src/core/prompts/system-prompt/tools/get_file_skeleton.ts`
-- `src/core/task/tools/handlers/GetFileSkeletonToolHandler.ts`
-- `src/core/prompts/system-prompt/tools/get_function.ts`
-- `src/core/task/tools/handlers/GetFunctionToolHandler.ts`
-- `src/core/prompts/system-prompt/tools/find_symbol_references.ts`
-- `src/core/task/tools/handlers/FindSymbolReferencesToolHandler.ts`
-- `src/utils/ASTAnchorBridge.ts`
-- `src/services/tree-sitter/index.ts`
-- `src/services/tree-sitter/languageParser.ts`
-- `src/services/tree-sitter/queries/*.ts`
-- `src/services/symbol-index/SymbolIndexService.ts`
-- `src/services/symbol-index/SymbolIndexDatabase.ts`
-- `src/services/symbol-index/sql-wasm.wasm`
-
-Editing and mutation tools:
-
-- `src/core/prompts/system-prompt/tools/edit_file.ts`
-- `src/core/task/tools/handlers/EditFileToolHandler.ts`
-- `src/core/task/tools/handlers/edit-file/BatchProcessor.ts`
-- `src/core/task/tools/handlers/edit-file/EditExecutor.ts`
-- `src/core/task/tools/handlers/edit-file/EditFormatter.ts`
-- `src/core/task/tools/handlers/edit-file/types.ts`
-- `src/core/task/tools/handlers/ReplaceSymbolToolHandler.ts`
-- `src/core/task/tools/handlers/RenameSymbolToolHandler.ts`
-
-Workspace/path support:
-
-- `src/core/workspace/WorkspaceResolver.ts`
-- `src/core/workspace/WorkspacePathAdapter.ts`
-- `src/core/workspace/utils/parseWorkspaceInlinePath.ts`
-- `src/core/ignore/DiracIgnoreController.ts`
-- `src/utils/path.ts`
-- `src/utils/fs.ts`
+- `anchors` depend on line hashing and session/file state only.
+- `read_file` depends on workspace safety, text extraction, hashing, and anchors.
+- `edit_file` depends on edit-ready anchor state, stale hash checks, direct filesystem writes, and no-partial-write validation.
+- `tree-sitter runtime` depends on WASM grammar assets, runtime WASM, query assets, and build-output asset resolution.
+- `get_file_skeleton` depends on tree-sitter runtime and safe source loading.
+- `get_function` depends on tree-sitter runtime, skeleton/range lookup patterns, and likely read/edit view integration.
+- `symbol index` depends on tree-sitter plus a persistence decision.
+- `replace_symbol` and `rename_symbol` depend on symbol/range resolution plus multi-file mutation/reporting strategy.
+- `diagnostics_scan` depends on host diagnostics or a deliberate standalone alternative.
+- `execute_command` depends on a sandbox/permission policy before any porting work.
 
 ## Porting Dependencies
 
-Hash anchors:
+### Hash Anchors
 
-- Required for `read_file`, `search_files` anchored formatted output, `edit_file`, and AST outputs.
-- Upstream `AnchorStateManager` stores anchors by task id and assigns randomized dictionary-word anchors while preserving unchanged lines through reconciliation.
-- The MCP `read_file` port uses deterministic `Axxxxxxxx` anchors scoped by `RuntimeContext.sessionId`. It preserves anchors through an ordered LCS-style reconciliation over FNV-1a line hashes, with prefix/suffix fast paths and a bounded greedy fallback for very large changed regions. Matched unchanged lines keep anchors; inserted, edited, deleted/reappearing, or unmatched moved lines receive fresh anchors. Duplicate identical lines remain distinct and are matched by ordered sequence. This is intentionally different from Dirac's random dictionary words to make standalone MCP tests and sessions reproducible.
+Upstream `AnchorStateManager` stores anchors by task id, assigns randomized dictionary-word anchors, and reconciles unchanged lines through line hashing.
 
-File extraction:
+MCP anchor ports should preserve these invariants even if ids differ:
 
-- Upstream supports text plus richer file types through `extract-file-content`.
-- Relevant package dependencies include `isbinaryfile`, `pdf-parse`, `mammoth`, and `image-size`.
-- The current MCP `read_file` port is text/code only. PDF, DOCX, XLSX, notebook, and image extraction are explicitly deferred with clear unsupported-file errors rather than partial extraction.
+- Anchors are session-scoped.
+- Unchanged lines keep anchors when reconciliation can prove continuity.
+- Duplicate identical lines remain distinct.
+- Stale or ambiguous anchors fail before mutation.
+- Edit tools must validate exact current text before writing.
 
-Tree-sitter:
+### File Extraction
 
-- Required by `get_file_skeleton`, `get_function`, `replace_symbol`, and parts of symbol tooling.
-- Relevant dependencies include `web-tree-sitter`, `tree-sitter-wasms`, and query files under `src/services/tree-sitter/queries`.
-- Standalone packaging now uses exact `web-tree-sitter@0.22.6` and `tree-sitter-wasms@^0.1.13`, matching upstream Dirac's compatible package line. `web-tree-sitter@0.26` was tested and rejected because it failed to load the `tree-sitter-wasms@0.1.13` grammar binaries.
-- The MCP package owns initial JavaScript/TypeScript `.scm` query assets in `mcp-server/src/tree-sitter/queries/` instead of importing upstream `.ts` query modules directly. This keeps query assets explicit and copyable for built `dist/`.
-- `mcp-server/scripts/copy-tree-sitter-assets.mjs` copies `web-tree-sitter` runtime WASM and JS/TS/TSX grammar WASM into `dist/tree-sitter/assets/wasm/`, and copies query assets into `dist/tree-sitter/assets/queries/`.
-- `mcp-server/src/tree-sitter/runtime.ts` resolves source/test assets via `import.meta.url` plus `createRequire(import.meta.url)` package fallback, and built assets from adjacent `dist/tree-sitter/assets/`. It avoids process-cwd package lookup. The built smoke path can run with `includeNodeModulesFallback: false` to prove packaged assets are sufficient.
-- `Parser.init()` is treated as process-global: the runtime records the initialized runtime WASM path, rejects later attempts to initialize with a different path, and resets state after init failure so retries are possible.
-- Initial supported extensions are `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx`. Additional upstream languages should be added only with grammar, query, source-test, built-smoke, and real-repo coverage.
+Upstream `extract-file-content` supports text plus richer formats. Relevant dependency families include binary detection, PDF parsing, DOCX extraction, image metadata, notebooks, and spreadsheets.
 
-Symbol index:
+MCP ports should not partially implement rich extraction without packaged dependencies and fixtures. Unsupported rich/binary types should fail explicitly until covered.
 
-- Required by `find_symbol_references` and `rename_symbol`.
-- Upstream uses SQLite WASM and `.dirac-symbol-index/data.db`.
-- MCP needs an explicit decision: persistent workspace index, session-scoped index, or no index until a consumer needs it.
+### Tree-Sitter
 
-Editing:
+Relevant upstream packages include `web-tree-sitter`, grammar WASM assets, and query files under `src/services/tree-sitter/queries`.
 
-- `EditExecutor` is the cleanest pure component: it resolves anchors, verifies anchor text, and applies non-overlapping edits in memory. The MCP anchor contract should keep that shape: future `edit_file` should resolve anchors from current session/file state, require exact line-text matches from the `Anchor§line_text` reference, reject stale anchors, prevent one anchor from resolving to multiple lines, and reconcile anchors again after a successful write.
-- `BatchProcessor` mixes pure edit flow with approval UI, VS Code diff saving, diagnostics, and file tracking.
-- MCP mutation tools need a headless write path, diff output, and failure reporting.
-- The first MCP `edit_file` port deliberately narrows Dirac's schema. Dirac accepts `files[]`, per-edit `edit_type`, `anchor`, `end_anchor`, and `text`, with `replace`, `insert_after`, and `insert_before`. The MCP tool accepts one `path` and `edits: { anchor, oldText, newText }[]` only.
-- MCP `edit_file` anchor semantics: `anchor` is the start line from same-session `read_file`; the replacement span is derived from the number of logical lines in `oldText`. This avoids adding `end_anchor` until the current `read_file` contract needs it and keeps stale validation centered on exact current text.
-- MCP `edit_file` stale behavior is more conservative than Dirac's prepare path. Dirac reconciles anchors against current file content before resolving edits; MCP consumes the existing anchor snapshot first, rejects full-file hash drift as stale, and requires exact `oldText` at the tracked start line.
-- MCP `edit_file` is stricter than Dirac by requiring the current normalized full-file hash to match the hash stored by the prior same-session edit-ready `read_file` or successful `edit_file` anchor refresh. This catches same-line-count external or cross-session edits before mutation; callers must call `read_file` with `view: "edit"` again after any file drift.
-- MCP anchor state remains in memory by design. It is scoped by `RuntimeContext.sessionId` and does not survive server restart, process reset, or session-id changes.
-- MCP `edit_file` applies all validated non-overlapping ranges bottom-to-top, writes once, then reconciles anchor state from the final file lines. Validation failures produce no write.
-- MCP `edit_file` normalizes requested `oldText`/`newText` and current file content to LF for logical matching and deterministic diff output, while writing back with the file's dominant existing EOL and preserving final newline presence.
-- MCP `edit_file` keeps a 1MB mutation cap. `read_file` exposes compatibility metadata and formatted warnings for larger files because ranged inspection can succeed even when mutation is unavailable.
-- MCP `edit_file` omits Dirac's approval UI, VS Code diff provider, dirty document save, diagnostics, auto-format/user-edit feedback, telemetry, multi-file batching, and insert-specific operations.
+Standalone MCP packaging needs source/test and built-output asset resolution. Built output must not accidentally work only because source files or `node_modules` are reachable from cwd.
 
-Ignore rules:
+Known compatibility point: `web-tree-sitter@0.22.6` works with `tree-sitter-wasms@^0.1.13`; newer `web-tree-sitter@0.26` failed to load those grammar binaries during this port.
 
-- Upstream list/search integrate gitignore and/or `DiracIgnoreController`.
-- Current MCP ports deliberately defer `.diracignore`; they rely on workspace-root containment and built-in generated/hidden skips.
+### Symbol Index
 
-Ripgrep:
+Upstream symbol index code uses SQLite WASM and `.dirac-symbol-index/data.db`. A standalone MCP server needs an explicit persistence decision before references or rename tools:
 
-- Upstream locates a bundled or known `rg` via `getBinaryLocation("rg")`.
-- Current MCP `search_files` uses system `rg` on `PATH`.
+- persistent workspace index,
+- session-scoped index,
+- or no index until a consumer requires it.
 
-## Already-Ported Read-Only Filesystem Tools
+### Editing
 
-`list_files`:
+`EditExecutor` is the best upstream pure-logic reference. It resolves anchors, validates line text, rejects invalid ranges, and applies sorted edits bottom-to-top.
 
-- MCP production-ready under the current standalone scope.
-- Core purpose ported: workspace-constrained file/directory listing.
-- Intentional differences from Dirac: compact relative-path text is the default MCP output, full structured JSON is available with `view: "full"`, no line counts/mtimes, no globby/gitignore integration, no `.diracignore`, and hidden non-git paths remain visible.
+`BatchProcessor` is less directly portable because it mixes pure edits with approval UI, VS Code diff saving, diagnostics, dirty document mediation, and file tracking.
 
-`search_files`:
+Standalone mutation tools need direct filesystem writes, deterministic diff/report output, and explicit validation failures.
 
-- MCP production-ready under the current standalone scope.
-- Core ripgrep JSON search behavior ported.
-- Dirac-parity caveats documented in the tracker: hidden path exclusion, byte columns, and first submatch only for same-line multiple matches.
-- Intentional differences from Dirac: compact match text is the default MCP output, `view: "files"` can group high match counts by file, full structured JSON is available with `view: "full"`, no hash-anchored formatted text, no `DiracIgnoreController`, and system `rg`.
+### Ignore Rules
 
-`read_file`:
+Upstream list/search integrate gitignore and/or `DiracIgnoreController`. MCP ports should decide separately whether `.diracignore` is worth adding. Workspace-root containment is not a semantic replacement for ignore files.
 
-- MCP production-ready under the current standalone text/code file scope.
-- Upstream behavior inspected:
-  - Schema accepts `paths`, optional `start_line`, and optional `end_line`.
-  - `ReadFileToolHandler` supports multiple paths, one-based inclusive ranges, a 50KB full-read guard, `[File Hash: ...]`, and hash-anchored lines.
-  - Upstream extraction supports text plus PDF, DOCX, IPYNB, XLSX, and model-gated images through extension dependencies.
-  - Upstream anchors use `AnchorStateManager`, line FNV hashes, task id scoping, and the `§` delimiter.
-- MCP behavior:
-  - Accepts `paths`, camelCase `startLine`/`endLine`, Dirac-compatible `start_line`/`end_line`, optional `lineLimit`, and optional `view: "read" | "edit" | "full"`.
-  - Uses existing workspace guards plus realpath containment; rejects symlinks and directories.
-  - Defaults to compact line-numbered formatted text without edit anchors. `view: "edit"` includes anchors and marks anchor state edit-ready. Full per-line structured output is available with `view: "full"`.
-  - Uses deterministic session-scoped `Axxxxxxxx` anchors and FNV-1a content hashes.
-  - Reports `editFileCompatibility` so agents can tell when a ranged read succeeded for a file that exceeds the narrower MCP `edit_file` mutation cap.
-  - Defers rich file extraction with explicit unsupported-file errors.
+### Ripgrep
 
-`edit_file`:
+Upstream finds a bundled/known `rg` through `getBinaryLocation("rg")`. A standalone MCP server can use system `rg`, but packaging/licensing should be documented before bundling a binary.
 
-- MCP production-ready under the current standalone single-file text/code scope.
-- Upstream behavior inspected:
-  - Schema accepts multi-file `files[]`, per-edit `edit_type`, `anchor`, `end_anchor`, and replacement `text`.
-  - `EditExecutor` resolves anchors, validates provided anchor line text, rejects reversed replace ranges, applies sorted edits bottom-to-top, and strips hashes from replacement text.
-  - `BatchProcessor` groups blocks by path, prepares edits, routes through approval/diff UI and diagnostics, saves via host/diff provider, and refreshes `AnchorStateManager` after save.
-  - `EditFormatter` returns Dirac-oriented anchored diff/result text and optionally full updated file content for extensive edits.
-- MCP behavior:
-  - Accepts one `path`, `edits: { anchor, oldText, newText }[]`, and optional `view: "summary" | "full"`.
-  - Requires same-session edit-ready `read_file` anchor state from `view: "edit"` and exact `oldText` at the tracked start line.
-  - Rejects stale line-count drift, unknown anchors, oldText mismatches, overlapping spans, and file safety errors before writing.
-  - Applies edits bottom-to-top, writes once, refreshes anchor state, and defaults to compact summary output plus tight line-count edit summary. Full applied-edit structured output is available with `view: "full"`.
-  - Defers multi-file batching, insert-specific operations, end-anchor ranges, approval UI, diagnostics, dirty-file mediation, and auto-format feedback.
+## Environment Differences vs Dirac
 
-`get_file_skeleton`:
-
-- MCP production-ready under the current standalone JS/TS AST scope.
-- Upstream behavior inspected:
-  - Schema accepts `paths: string[]`.
-  - `GetFileSkeletonToolHandler` resolves workspace paths, calls `ASTAnchorBridge.getFileSkeleton` per file, wraps results in Dirac UI/approval/telemetry messaging, and returns formatted text.
-  - `ASTAnchorBridge.getFileSkeleton` calls `parseFile`, reconciles `AnchorStateManager` anchors, and emits definition lines with optional line-count and call-graph comments.
-  - Upstream `parseFile` uses tree-sitter query captures, definition-name captures, and optional reference captures for call graph metadata.
-- MCP behavior:
-  - Accepts `paths`, optional `limit`, optional `view: "outline" | "signatures" | "full"`, optional `includeImports`, and optional `maxSignatureChars`.
-  - Supports `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx` through the shared `mcp-server/src/tree-sitter/runtime.ts` runtime and MCP-owned query assets.
-  - Reuses workspace/path safety helpers and rejects missing paths, directories, symlinks, symlink escapes, out-of-workspace paths, unsupported extensions, rich/binary files, invalid UTF-8, binary-looking files, and files over the 1MB parse safety cap before parsing.
-  - Defaults to compact signatures text with grouped imports/exports, short kind tags, source line counts, parse error status, entry/truncation counts, line ranges, bounded signatures, and parse-error markers only when relevant. `view: "outline"` omits signatures for cheaper navigation.
-  - Full JSON mode with `view: "full"` returns per-file `path`, `relativePath`, `language`, `rootType`, `sourceLength`, `sourceLineCount`, `locationEncoding`, `hasParseErrors`, `entryCount`, `limit`, `truncated`, and nested entries shaped as `{ id, kind, name, qualifiedName, signature, signatureTruncated, location, containsParseErrors, children }`.
-  - Preserves imports, export-only statements, exported definitions, anonymous default exports, top-level functions/classes, JS/TS constructors, class/interface methods, named arrow/function expressions including multiple declarators, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
-  - Extracts signatures from tree-sitter `body` fields first, with a fallback for unusual grammar nodes, so nested default-parameter callbacks, heritage expressions, and decorator/object arguments do not truncate declaration signatures.
-  - Uses raw file text for parsing; entry locations are tree-sitter UTF-8 byte offsets plus one-based lines.
-  - Surfaces parser recovery through file-level `hasParseErrors` and entry-level `containsParseErrors` instead of pretending broken source parsed cleanly.
-  - Compact views intentionally omit absolute paths, byte offsets, stable ids, repeated `containsParseErrors: false`, and deeply nested JSON overhead. Entry ids and line/byte locations are non-edit metadata available only in full mode; callers must use `read_file` with `view: "edit"` to obtain edit-compatible anchors before `edit_file`.
-  - Intentionally omits Dirac call graph comments, `.diracignore`, approval UI, telemetry, richer import/re-export sub-kinds, and all non-JS/TS languages until grammar/query assets and real-repo coverage are added.
-
-## Next Likely Tool Area
-
-`read_file`, single-file `edit_file`, tree-sitter packaging, and `get_file_skeleton` are stable enough for the next AST-backed tool. The next recommended tool is `get_function`, reusing the skeleton safety checks, shared parser runtime, and structured output patterns.
-
-## Risks For Anchors, Tree-Sitter, And Editing
-
-- Anchor drift: MCP sessions need stable ids and clear lifecycle rules, otherwise anchors generated by `read_file` may not be available to `edit_file`.
-- Anchor storage: upstream state is in memory by task id; a long-lived MCP server may need cleanup or explicit reset behavior.
-- Reorders/moves: MCP reconciliation preserves an ordered unchanged subsequence, matching Dirac's diff-style assumptions. It does not try to preserve every moved line across arbitrary reorder operations because that can make stale anchor reuse ambiguous for editing.
-- Tree-sitter assets: WASM and query files must resolve after TypeScript build, not only from source-tree execution. `get_file_skeleton` extends the built smoke script to exercise the built tool path.
-- AST parity: `ASTAnchorBridge` assumes upstream parser/index behavior and may need adaptation for MCP output shapes. The MCP skeleton port deliberately uses non-edit locations instead of Dirac anchors.
-- Mutation safety: current `edit_file` avoids overlapping edits, stale line-count drift, oldText mismatches, and partial writes for single-file replacement. Future mutation extensions must preserve those guarantees.
-- Host replacement: upstream mutation paths call VS Code-ish services such as `DiffViewProvider`, diagnostics providers, and `HostProvider.workspace.saveOpenDocumentIfDirty`; MCP needs direct filesystem equivalents or explicit omissions.
-- Symbol index persistence: `.dirac-symbol-index` may be undesirable for a standalone MCP server unless the user opts in.
-- Command execution: `execute_command` should remain unported until a sandbox/permission model is defined.
+- MCP stdio server instead of VS Code extension runtime.
+- No approval UI, webview, provider/auth flow, telemetry, or task UI callbacks.
+- No VS Code diff provider or dirty-document mediation.
+- No implicit workspace service; workspace roots must be explicit.
+- No long-lived task object; session state must be deliberately scoped and cleaned up.
+- ESM NodeNext runtime with explicit import specifiers.
+- Generated build output must stay outside git.
+- Errors should be concise MCP tool errors with optional structured metadata, not UI messages.
 
 ## Suggested Build Order
 
-1. Maintain `list_files` and `search_files`; do not keep reworking them unless a verified bug appears.
-2. Port `read_file` and define anchor session behavior.
-3. Tree-sitter packaging support is done.
-4. `get_file_skeleton` is done for JS/TS.
-5. Port `get_function`.
-6. Maintain `edit_file`; consider insert/end-anchor extensions only in a dedicated session.
-7. Consider symbol-index tools after persistence is decided.
-8. Consider `execute_command` only with an explicit policy.
+1. Maintain current filesystem/search/read/edit/skeleton tools; avoid reworking them without a verified bug.
+2. Port `get_function` using the existing JS/TS tree-sitter runtime and skeleton extraction patterns.
+3. Consider edit workflow extensions only after `get_function` clarifies targeted range/edit needs.
+4. Decide symbol index persistence before porting references or rename tools.
+5. Add more tree-sitter languages only with grammar assets, query assets, source tests, built smoke, and real-repo coverage.
+6. Consider rich file extraction only with packaged dependencies and fixtures.
+7. Consider `execute_command` only after a sandbox/permission model exists.
+
+## Known Upstream Pitfalls
+
+- Dirac handlers are not pure library functions; most assume `TaskConfig` and host services.
+- Upstream anchor strings and MCP anchor ids need not match, but edit safety invariants must match.
+- AST anchor bridge behavior assumes upstream parser/query/index semantics and may not map directly to compact MCP output views.
+- Tree-sitter asset resolution can pass in source mode and fail from built `dist`; always smoke built output after parser/runtime changes.
+- Query captures can be useful without being full upstream parity. Do not claim language support without fixtures and real file smoke.
+- Multi-file editing in upstream relies on host approval/diff behavior. A headless MCP port needs its own transaction/reporting design.
+- Symbol rename/reference tools may look easy from handlers but hide index persistence and cross-file correctness decisions.
+- Diagnostics are host-heavy; do not port them by stubbing UI diagnostics.
+- Command execution is powerful and risky; do not expose it as a convenience port.

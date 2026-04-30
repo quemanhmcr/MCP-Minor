@@ -48,8 +48,8 @@ export const readFileOutputSchema = {
     z.object({
       path: z.string().optional(),
       relativePath: z.string(),
-      fileHash: z.string(),
-      editFileCompatibility: editFileCompatibilitySchema,
+      fileHash: z.string().optional(),
+      editFileCompatibility: editFileCompatibilitySchema.optional(),
       totalLines: z.number().int().nonnegative(),
       startLine: z.number().int().positive(),
       endLine: z.number().int().nonnegative(),
