@@ -46,6 +46,47 @@ describe("search_files MCP tool", () => {
         },
       });
 
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toBe("search: 1/100 matches\nsrc/file.ts:1: searchable");
+      expect(result.structuredContent).toEqual({
+        view: "matches",
+        matches: 1,
+        files: 1,
+        limit: 100,
+        truncated: false,
+      });
+      expect(content[0]?.text).not.toContain(workspaceRoot);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns full structured JSON when requested", async () => {
+    const server = createMcpServer({
+      cwd: workspaceRoot,
+      sessionId: "test",
+      workspaceRoots: [workspaceRoot],
+    });
+    const client = new Client({
+      name: "test-client",
+      version: "0.0.0",
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: "search_files",
+        arguments: {
+          paths: ["src"],
+          regex: "searchable",
+          filePattern: "*.ts",
+          format: "json",
+        },
+      });
+
       expect(result.structuredContent).toEqual({
         matches: [
           {
@@ -59,6 +100,41 @@ describe("search_files MCP tool", () => {
         limit: 100,
         truncated: false,
       });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("groups compact matches by file when requested", async () => {
+    await fs.writeFile(path.join(workspaceRoot, "src", "other.ts"), "searchable\nsearchable\n");
+    const server = createMcpServer({
+      cwd: workspaceRoot,
+      sessionId: "test",
+      workspaceRoots: [workspaceRoot],
+    });
+    const client = new Client({
+      name: "test-client",
+      version: "0.0.0",
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: "search_files",
+        arguments: {
+          paths: ["src"],
+          regex: "searchable",
+          view: "files",
+        },
+      });
+
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toContain("matches in 2 files");
+      expect(content[0]?.text).toContain("src/other.ts: L1, L2 (2)");
+      expect(result.structuredContent).toMatchObject({ view: "files", matches: 3, files: 2 });
     } finally {
       await client.close();
       await server.close();

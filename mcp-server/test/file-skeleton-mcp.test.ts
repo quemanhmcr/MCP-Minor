@@ -47,27 +47,58 @@ describe("get_file_skeleton MCP tool", () => {
       expect(result.isError).toBeUndefined();
       const content = result.content as Array<{ type: string; text: string }>;
       expect(content[0]).toMatchObject({ type: "text" });
-      expect(content[0]?.text).toContain('"name": "Worker"');
+      expect(content[0]?.text).toContain("file:src/file.ts | ts | 6L | n:3 | parse:ok");
+      expect(content[0]?.text).toContain("cls Worker L1-5 export class Worker");
+      expect(content[0]?.text).toContain("  fn run L2-4 run()");
+      expect(content[0]?.text).not.toContain('"id"');
+      expect(content[0]?.text).not.toContain("startByte");
       expect(result.structuredContent).toMatchObject({
+        view: "signatures",
         limit: 500,
         truncated: false,
         files: [
           {
-            path: path.join(workspaceRoot, "src", "file.ts"),
             relativePath: "src/file.ts",
             language: "typescript",
-            rootType: "program",
             hasParseErrors: false,
+            sourceLineCount: 6,
+            entryCount: 3,
             truncated: false,
           },
         ],
       });
+      expect(JSON.stringify(result.structuredContent)).not.toContain(path.join(workspaceRoot, "src", "file.ts"));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns full structured JSON when requested", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const result = await client.callTool({
+        name: "get_file_skeleton",
+        arguments: {
+          paths: ["src/file.ts"],
+          format: "json",
+        },
+      });
 
       const structured = result.structuredContent as {
         files: Array<{
+          path: string;
+          rootType: string;
+          locationEncoding: string;
           entries: Array<{ kind: string; name: string; children: Array<{ kind: string; name: string }> }>;
         }>;
       };
+      expect(structured.files[0]).toMatchObject({
+        path: path.join(workspaceRoot, "src", "file.ts"),
+        rootType: "program",
+        locationEncoding: "tree-sitter-utf8-byte-offsets",
+      });
       expect(structured.files[0].entries.map((entry) => [entry.kind, entry.name])).toEqual([
         ["class", "Worker"],
         ["function", "makeWorker"],
@@ -75,6 +106,28 @@ describe("get_file_skeleton MCP tool", () => {
       expect(structured.files[0].entries[0].children).toEqual([
         expect.objectContaining({ kind: "method", name: "run" }),
       ]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("supports outline view without signatures", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const result = await client.callTool({
+        name: "get_file_skeleton",
+        arguments: {
+          paths: ["src/file.ts"],
+          view: "outline",
+        },
+      });
+
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toContain("cls Worker L1-5");
+      expect(content[0]?.text).not.toContain("export class Worker");
+      expect(result.structuredContent).toMatchObject({ view: "outline" });
     } finally {
       await client.close();
       await server.close();

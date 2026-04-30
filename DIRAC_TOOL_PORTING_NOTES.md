@@ -130,7 +130,7 @@ Editing:
 - The first MCP `edit_file` port deliberately narrows Dirac's schema. Dirac accepts `files[]`, per-edit `edit_type`, `anchor`, `end_anchor`, and `text`, with `replace`, `insert_after`, and `insert_before`. The MCP tool accepts one `path` and `edits: { anchor, oldText, newText }[]` only.
 - MCP `edit_file` anchor semantics: `anchor` is the start line from same-session `read_file`; the replacement span is derived from the number of logical lines in `oldText`. This avoids adding `end_anchor` until the current `read_file` contract needs it and keeps stale validation centered on exact current text.
 - MCP `edit_file` stale behavior is more conservative than Dirac's prepare path. Dirac reconciles anchors against current file content before resolving edits; MCP consumes the existing anchor snapshot first, rejects full-file hash drift as stale, and requires exact `oldText` at the tracked start line.
-- MCP `edit_file` is stricter than Dirac by requiring the current normalized full-file hash to match the hash stored by the prior same-session `read_file` or successful `edit_file` anchor refresh. This catches same-line-count external or cross-session edits before mutation; callers must call `read_file` again after any file drift.
+- MCP `edit_file` is stricter than Dirac by requiring the current normalized full-file hash to match the hash stored by the prior same-session edit-ready `read_file` or successful `edit_file` anchor refresh. This catches same-line-count external or cross-session edits before mutation; callers must call `read_file` with `view: "edit"` again after any file drift.
 - MCP anchor state remains in memory by design. It is scoped by `RuntimeContext.sessionId` and does not survive server restart, process reset, or session-id changes.
 - MCP `edit_file` applies all validated non-overlapping ranges bottom-to-top, writes once, then reconciles anchor state from the final file lines. Validation failures produce no write.
 - MCP `edit_file` normalizes requested `oldText`/`newText` and current file content to LF for logical matching and deterministic diff output, while writing back with the file's dominant existing EOL and preserving final newline presence.
@@ -153,14 +153,14 @@ Ripgrep:
 
 - MCP production-ready under the current standalone scope.
 - Core purpose ported: workspace-constrained file/directory listing.
-- Intentional differences from Dirac: structured JSON output, no line counts/mtimes, no globby/gitignore integration, no `.diracignore`, and hidden non-git paths remain visible.
+- Intentional differences from Dirac: compact relative-path text is the default MCP output, full structured JSON is available with `view: "full"`, no line counts/mtimes, no globby/gitignore integration, no `.diracignore`, and hidden non-git paths remain visible.
 
 `search_files`:
 
 - MCP production-ready under the current standalone scope.
 - Core ripgrep JSON search behavior ported.
 - Dirac-parity caveats documented in the tracker: hidden path exclusion, byte columns, and first submatch only for same-line multiple matches.
-- Intentional differences from Dirac: structured JSON output, no hash-anchored formatted text, no `DiracIgnoreController`, and system `rg`.
+- Intentional differences from Dirac: compact match text is the default MCP output, `view: "files"` can group high match counts by file, full structured JSON is available with `view: "full"`, no hash-anchored formatted text, no `DiracIgnoreController`, and system `rg`.
 
 `read_file`:
 
@@ -171,9 +171,9 @@ Ripgrep:
   - Upstream extraction supports text plus PDF, DOCX, IPYNB, XLSX, and model-gated images through extension dependencies.
   - Upstream anchors use `AnchorStateManager`, line FNV hashes, task id scoping, and the `§` delimiter.
 - MCP behavior:
-  - Accepts `paths`, camelCase `startLine`/`endLine`, Dirac-compatible `start_line`/`end_line`, and optional `lineLimit`.
+  - Accepts `paths`, camelCase `startLine`/`endLine`, Dirac-compatible `start_line`/`end_line`, optional `lineLimit`, and optional `view: "read" | "edit" | "full"`.
   - Uses existing workspace guards plus realpath containment; rejects symlinks and directories.
-  - Returns structured per-line output and line-numbered formatted text.
+  - Defaults to compact line-numbered formatted text without edit anchors. `view: "edit"` includes anchors and marks anchor state edit-ready. Full per-line structured output is available with `view: "full"`.
   - Uses deterministic session-scoped `Axxxxxxxx` anchors and FNV-1a content hashes.
   - Reports `editFileCompatibility` so agents can tell when a ranged read succeeded for a file that exceeds the narrower MCP `edit_file` mutation cap.
   - Defers rich file extraction with explicit unsupported-file errors.
@@ -187,10 +187,10 @@ Ripgrep:
   - `BatchProcessor` groups blocks by path, prepares edits, routes through approval/diff UI and diagnostics, saves via host/diff provider, and refreshes `AnchorStateManager` after save.
   - `EditFormatter` returns Dirac-oriented anchored diff/result text and optionally full updated file content for extensive edits.
 - MCP behavior:
-  - Accepts one `path` and `edits: { anchor, oldText, newText }[]`.
-  - Requires same-session `read_file` anchor state and exact `oldText` at the tracked start line.
+  - Accepts one `path`, `edits: { anchor, oldText, newText }[]`, and optional `view: "summary" | "full"`.
+  - Requires same-session edit-ready `read_file` anchor state from `view: "edit"` and exact `oldText` at the tracked start line.
   - Rejects stale line-count drift, unknown anchors, oldText mismatches, overlapping spans, and file safety errors before writing.
-  - Applies edits bottom-to-top, writes once, refreshes anchor state, and returns structured output plus deterministic patch summary.
+  - Applies edits bottom-to-top, writes once, refreshes anchor state, and defaults to compact summary output plus tight line-count edit summary. Full applied-edit structured output is available with `view: "full"`.
   - Defers multi-file batching, insert-specific operations, end-anchor ranges, approval UI, diagnostics, dirty-file mediation, and auto-format feedback.
 
 `get_file_skeleton`:
@@ -202,15 +202,16 @@ Ripgrep:
   - `ASTAnchorBridge.getFileSkeleton` calls `parseFile`, reconciles `AnchorStateManager` anchors, and emits definition lines with optional line-count and call-graph comments.
   - Upstream `parseFile` uses tree-sitter query captures, definition-name captures, and optional reference captures for call graph metadata.
 - MCP behavior:
-  - Accepts `paths` and optional `limit`.
+  - Accepts `paths`, optional `limit`, optional `view: "outline" | "signatures" | "full"`, optional `includeImports`, and optional `maxSignatureChars`.
   - Supports `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, and `.tsx` through the shared `mcp-server/src/tree-sitter/runtime.ts` runtime and MCP-owned query assets.
   - Reuses workspace/path safety helpers and rejects missing paths, directories, symlinks, symlink escapes, out-of-workspace paths, unsupported extensions, rich/binary files, invalid UTF-8, binary-looking files, and files over the 1MB parse safety cap before parsing.
-  - Returns structured JSON with per-file `path`, `relativePath`, `language`, `rootType`, `sourceLength`, `locationEncoding`, `hasParseErrors`, `entryCount`, `limit`, `truncated`, and nested entries shaped as `{ id, kind, name, qualifiedName, signature, signatureTruncated, location, containsParseErrors, children }`.
+  - Defaults to compact signatures text with grouped imports/exports, short kind tags, source line counts, parse error status, entry/truncation counts, line ranges, bounded signatures, and parse-error markers only when relevant. `view: "outline"` omits signatures for cheaper navigation.
+  - Full JSON mode with `view: "full"` returns per-file `path`, `relativePath`, `language`, `rootType`, `sourceLength`, `sourceLineCount`, `locationEncoding`, `hasParseErrors`, `entryCount`, `limit`, `truncated`, and nested entries shaped as `{ id, kind, name, qualifiedName, signature, signatureTruncated, location, containsParseErrors, children }`.
   - Preserves imports, export-only statements, exported definitions, anonymous default exports, top-level functions/classes, JS/TS constructors, class/interface methods, named arrow/function expressions including multiple declarators, TypeScript interfaces/types/enums, duplicate names in different scopes, and practical nested members.
   - Extracts signatures from tree-sitter `body` fields first, with a fallback for unusual grammar nodes, so nested default-parameter callbacks, heritage expressions, and decorator/object arguments do not truncate declaration signatures.
   - Uses raw file text for parsing; entry locations are tree-sitter UTF-8 byte offsets plus one-based lines.
   - Surfaces parser recovery through file-level `hasParseErrors` and entry-level `containsParseErrors` instead of pretending broken source parsed cleanly.
-  - Does not emit edit anchors. Entry ids and line/byte locations are non-edit metadata; callers must use `read_file` to obtain edit-compatible anchors before `edit_file`.
+  - Compact views intentionally omit absolute paths, byte offsets, stable ids, repeated `containsParseErrors: false`, and deeply nested JSON overhead. Entry ids and line/byte locations are non-edit metadata available only in full mode; callers must use `read_file` with `view: "edit"` to obtain edit-compatible anchors before `edit_file`.
   - Intentionally omits Dirac call graph comments, `.diracignore`, approval UI, telemetry, richer import/re-export sub-kinds, and all non-JS/TS languages until grammar/query assets and real-repo coverage are added.
 
 ## Next Likely Tool Area

@@ -3,12 +3,15 @@ import { z } from "zod";
 
 import {
   MAX_READ_FILE_LINE_LIMIT,
+  compactReadFileResult,
   formatReadFileResult,
   readWorkspaceFiles,
 } from "../filesystem/read-file.js";
 import { normalizeWorkspaceError } from "../filesystem/workspace.js";
 import type { RuntimeContext } from "../runtime/context.js";
-import { structuredToolResponse, toolErrorResponse } from "./response.js";
+import { compactToolResponse, structuredToolResponse, toolErrorResponse, type ToolOutputFormat } from "./response.js";
+
+type ReadFileView = "read" | "edit" | "full";
 
 export const readFileInputSchema = {
   paths: z.array(z.string().min(1)).min(1).describe("Files to read, relative to the server cwd unless absolute."),
@@ -22,6 +25,9 @@ export const readFileInputSchema = {
     .positive()
     .optional()
     .describe(`Maximum number of lines per file to return. Values above ${MAX_READ_FILE_LINE_LIMIT} are clamped.`),
+  view: z.enum(["read", "edit", "full"]).optional().describe("Output view. read is line-numbered without anchors; edit includes anchors and prepares edit_file; full returns per-line structured metadata."),
+  includeAnchors: z.boolean().optional().describe("Override anchor inclusion. true makes compact output edit-ready."),
+  format: z.enum(["compact", "json"]).optional().describe("Deprecated alias: compact maps to view=read, json maps to view=full."),
 };
 
 const readFileLineSchema = z.object({
@@ -40,19 +46,21 @@ const editFileCompatibilitySchema = z.object({
 export const readFileOutputSchema = {
   files: z.array(
     z.object({
-      path: z.string(),
+      path: z.string().optional(),
       relativePath: z.string(),
       fileHash: z.string(),
       editFileCompatibility: editFileCompatibilitySchema,
       totalLines: z.number().int().nonnegative(),
       startLine: z.number().int().positive(),
       endLine: z.number().int().nonnegative(),
-      lines: z.array(readFileLineSchema),
-      content: z.string(),
+      editReady: z.boolean().optional(),
+      lines: z.array(readFileLineSchema).optional(),
+      content: z.string().optional(),
       truncated: z.boolean(),
-      anchorDelimiter: z.string(),
+      anchorDelimiter: z.string().optional(),
     }),
   ),
+  view: z.enum(["read", "edit"]).optional(),
   lineLimit: z.number().int().positive(),
   truncated: z.boolean(),
 };
@@ -85,15 +93,36 @@ export function createReadFileHandler(context: RuntimeContext) {
     start_line?: number;
     end_line?: number;
     lineLimit?: number;
+    view?: ReadFileView;
+    includeAnchors?: boolean;
+    format?: ToolOutputFormat;
   }) => {
     try {
-      const result = await readWorkspaceFiles(context, input);
-      const response = structuredToolResponse(result as unknown as Record<string, unknown>);
+      const view = resolveReadFileView(input);
+      const includeAnchors = input.includeAnchors ?? (view === "edit" || view === "full");
+      const result = await readWorkspaceFiles(context, { ...input, includeAnchors });
 
-      response.content[0].text = formatReadFileResult(result);
-      return response;
+      if (view !== "full") {
+        return compactToolResponse(
+          formatReadFileResult(result, { includeAnchors }),
+          compactReadFileResult(result, { includeAnchors }),
+        );
+      }
+
+      return structuredToolResponse(result as unknown as Record<string, unknown>);
     } catch (error) {
       return toolErrorResponse(error, normalizeWorkspaceError);
     }
   };
+}
+
+function resolveReadFileView(input: { view?: ReadFileView; format?: ToolOutputFormat }): ReadFileView {
+  if (input.format === "json") {
+    return "full";
+  }
+
+  if (input.view) {
+    return input.view;
+  }
+  return "read";
 }

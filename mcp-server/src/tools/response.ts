@@ -1,4 +1,6 @@
 export type ToolStructuredResult = Record<string, unknown>;
+export type ToolOutputFormat = "compact" | "json";
+export type LegacyToolOutputFormat = ToolOutputFormat;
 
 export interface ToolSuccessResponse {
   [key: string]: unknown;
@@ -34,6 +36,22 @@ export function structuredToolResponse(result: ToolStructuredResult): ToolSucces
     ],
     structuredContent: result,
   };
+}
+
+export function compactToolResponse(text: string, structuredContent: object): ToolSuccessResponse {
+  return {
+    content: [
+      {
+        type: "text",
+        text,
+      },
+    ],
+    structuredContent: structuredContent as ToolStructuredResult,
+  };
+}
+
+export function chooseOutputFormat(format: ToolOutputFormat | undefined): ToolOutputFormat {
+  return format ?? "compact";
 }
 
 export function toolErrorResponse(error: unknown, normalizeError: (error: unknown) => Error = normalizeToolError): ToolErrorResponse {

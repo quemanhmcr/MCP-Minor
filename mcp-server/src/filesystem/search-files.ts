@@ -50,6 +50,14 @@ export interface SearchFilesResult {
   truncated: boolean;
 }
 
+export interface CompactSearchFilesResult {
+  view: "matches" | "files";
+  matches: number;
+  files: number;
+  limit: number;
+  truncated: boolean;
+}
+
 export interface SearchFilesOptions {
   rgCommand?: string;
 }
@@ -153,6 +161,71 @@ export async function searchWorkspaceFiles(
   }
 
   return formatMatches(context, parseRipgrepOutput(result.stdout), contextLines, limit, result.stdoutTruncated);
+}
+
+export function formatSearchFilesCompact(
+  result: SearchFilesResult,
+  options: { view?: "matches" | "files"; includeColumn?: boolean } = {},
+): string {
+  const view = options.view ?? "matches";
+  if (view === "files") {
+    return formatSearchFilesByFile(result);
+  }
+
+  const lines = [
+    `search: ${result.matches.length}/${result.limit}${result.truncated ? " truncated" : ""} matches`,
+    ...result.matches.flatMap((match) => {
+      const location = options.includeColumn && match.column !== undefined ? `${match.line}:${match.column}` : `${match.line}`;
+      const line = `${match.relativePath}:${location}: ${match.match}`;
+      if (!match.preview || match.preview.length === 0) {
+        return [line];
+      }
+
+      return [
+        line,
+        ...match.preview.map((preview) => {
+          const marker = preview.match ? ">" : " ";
+          return `${marker} ${match.relativePath}:${preview.line}: ${preview.text}`;
+        }),
+      ];
+    }),
+  ];
+
+  return lines.join("\n");
+}
+
+export function compactSearchFilesResult(
+  result: SearchFilesResult,
+  options: { view?: "matches" | "files" } = {},
+): CompactSearchFilesResult {
+  return {
+    view: options.view ?? "matches",
+    matches: result.matches.length,
+    files: new Set(result.matches.map((match) => match.relativePath)).size,
+    limit: result.limit,
+    truncated: result.truncated,
+  };
+}
+
+function formatSearchFilesByFile(result: SearchFilesResult): string {
+  const byFile = new Map<string, SearchFilesEntry[]>();
+  for (const match of result.matches) {
+    const matches = byFile.get(match.relativePath);
+    if (matches) {
+      matches.push(match);
+    } else {
+      byFile.set(match.relativePath, [match]);
+    }
+  }
+
+  const lines = [
+    `search: ${result.matches.length}/${result.limit}${result.truncated ? " truncated" : ""} matches in ${byFile.size} files`,
+  ];
+  for (const [relativePath, matches] of byFile.entries()) {
+    const locations = matches.map((match) => `L${match.line}`).join(", ");
+    lines.push(`${relativePath}: ${locations} (${matches.length})`);
+  }
+  return lines.join("\n");
 }
 
 function validatePaths(paths: unknown): string[] {

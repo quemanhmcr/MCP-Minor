@@ -133,7 +133,7 @@ describe("editWorkspaceFile", () => {
         path: "src/main.ts",
         edits: [{ anchor: anchors.beta, oldText: "beta", newText: "BETA" }],
       }),
-    ).rejects.toThrow("Path 'src/main.ts' has no anchor state. Call read_file on this file before edit_file.");
+    ).rejects.toThrow('Path \'src/main.ts\' has no edit-ready anchor state. Call read_file with view: "edit" before edit_file.');
 
     await expect(readFile("src/main.ts")).resolves.toBe("alpha\nbeta\ngamma\ndelta\n");
   });

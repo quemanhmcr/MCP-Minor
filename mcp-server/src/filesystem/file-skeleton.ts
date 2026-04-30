@@ -18,6 +18,8 @@ export const DEFAULT_FILE_SKELETON_LIMIT = 500;
 export const MAX_FILE_SKELETON_LIMIT = 2_000;
 export const MAX_FILE_SKELETON_BYTES = 1 * 1024 * 1024;
 export const MAX_FILE_SKELETON_BYTES_LABEL = "1MB";
+export const DEFAULT_MAX_SIGNATURE_CHARS = 120;
+export const MAX_SIGNATURE_CHARS = 500;
 
 const UNSUPPORTED_RICH_EXTENSIONS = new Set([
   ".pdf",
@@ -68,6 +70,7 @@ export type SkeletonEntryKind =
 export interface FileSkeletonInput {
   paths: string[];
   limit?: number;
+  maxSignatureChars?: number;
 }
 
 export interface SourceLocation {
@@ -95,6 +98,7 @@ export interface FileSkeletonEntry {
   language: "javascript" | "typescript" | "tsx";
   rootType: string;
   sourceLength: number;
+  sourceLineCount: number;
   locationEncoding: typeof LOCATION_ENCODING;
   hasParseErrors: boolean;
   entries: SkeletonEntry[];
@@ -107,6 +111,27 @@ export interface FileSkeletonResult {
   files: FileSkeletonEntry[];
   limit: number;
   truncated: boolean;
+}
+
+export interface CompactFileSkeletonResult {
+  view: "outline" | "signatures";
+  files: Array<{
+    relativePath: string;
+    language: FileSkeletonEntry["language"];
+    sourceLength: number;
+    sourceLineCount: number;
+    hasParseErrors: boolean;
+    entryCount: number;
+    truncated: boolean;
+  }>;
+  limit: number;
+  truncated: boolean;
+}
+
+export interface FileSkeletonFormatOptions {
+  view?: "outline" | "signatures";
+  includeImports?: boolean;
+  maxSignatureChars?: number;
 }
 
 interface FlatDefinition {
@@ -145,7 +170,40 @@ export async function getWorkspaceFileSkeleton(
 }
 
 export function formatFileSkeletonResult(result: FileSkeletonResult): string {
-  return JSON.stringify(result, null, 2);
+  return formatFileSkeletonCompact(result);
+}
+
+export function formatFileSkeletonCompact(result: FileSkeletonResult, options: FileSkeletonFormatOptions = {}): string {
+  return result.files.map((file) => formatOneFileSkeletonCompact(file, normalizeFormatOptions(options))).join("\n\n");
+}
+
+export function compactFileSkeletonResult(
+  result: FileSkeletonResult,
+  options: FileSkeletonFormatOptions = {},
+): CompactFileSkeletonResult {
+  const normalized = normalizeFormatOptions(options);
+  return {
+    view: normalized.view,
+    files: result.files.map((file) => ({
+      relativePath: file.relativePath,
+      language: file.language,
+      sourceLength: file.sourceLength,
+      sourceLineCount: file.sourceLineCount,
+      hasParseErrors: file.hasParseErrors,
+      entryCount: file.entryCount,
+      truncated: file.truncated,
+    })),
+    limit: result.limit,
+    truncated: result.truncated,
+  };
+}
+
+function normalizeFormatOptions(options: FileSkeletonFormatOptions): Required<FileSkeletonFormatOptions> {
+  return {
+    view: options.view ?? "signatures",
+    includeImports: options.includeImports ?? true,
+    maxSignatureChars: validateMaxSignatureChars(options.maxSignatureChars),
+  };
 }
 
 async function getOneFileSkeleton(
@@ -184,6 +242,7 @@ async function getOneFileSkeleton(
       language: parsed.language.languageId,
       rootType: parsed.rootNodeType,
       sourceLength: parsed.sourceLength,
+      sourceLineCount: countSourceLines(source),
       locationEncoding: LOCATION_ENCODING,
       hasParseErrors: parsed.hasError,
       entries: extracted.entries,
@@ -194,6 +253,144 @@ async function getOneFileSkeleton(
   } finally {
     parsed.dispose();
   }
+}
+
+function formatOneFileSkeletonCompact(file: FileSkeletonEntry, options: Required<FileSkeletonFormatOptions>): string {
+  const header = [
+    `file:${file.relativePath}`,
+    languageTag(file.language),
+    `${file.sourceLineCount}L`,
+    `n:${file.entryCount}${file.truncated ? `/${file.limit}` : ""}`,
+    `parse:${file.hasParseErrors ? "err" : "ok"}`,
+    file.truncated ? "trunc" : "",
+  ].filter(Boolean).join(" | ");
+
+  const lines = [header];
+  if (options.includeImports) {
+    const imports = formatGroupedImports(file.entries);
+    const exports = formatGroupedExports(file.entries);
+    if (imports) {
+      lines.push(imports);
+    }
+    if (exports) {
+      lines.push(exports);
+    }
+  }
+
+  for (const entry of file.entries.filter((entry) => entry.kind !== "import" && entry.kind !== "export")) {
+    appendSkeletonEntry(lines, entry, 0, options);
+  }
+  return lines.join("\n");
+}
+
+function appendSkeletonEntry(
+  lines: string[],
+  entry: SkeletonEntry,
+  depth: number,
+  options: Required<FileSkeletonFormatOptions>,
+): void {
+  const indent = "  ".repeat(depth);
+  const range = formatLineRange(entry.location);
+  const signature = options.view === "signatures" && entry.signature
+    ? trimSignatureForOutput(entry.signature, options.maxSignatureChars)
+    : { text: "", truncated: false };
+  const flags = [
+    entry.signatureTruncated || signature.truncated ? " sig-trunc" : "",
+    entry.containsParseErrors ? " parse-error" : "",
+  ].join("");
+  const signatureText = signature.text ? ` ${signature.text}` : "";
+
+  lines.push(`${indent}${kindTag(entry.kind)} ${entry.name} ${range}${signatureText}${flags}`);
+  for (const child of entry.children) {
+    appendSkeletonEntry(lines, child, depth + 1, options);
+  }
+}
+
+function formatLineRange(location: SourceLocation): string {
+  return location.startLine === location.endLine ? `L${location.startLine}` : `L${location.startLine}-${location.endLine}`;
+}
+
+function kindTag(kind: SkeletonEntryKind): string {
+  switch (kind) {
+    case "class":
+      return "cls";
+    case "enum":
+      return "enum";
+    case "function":
+      return "fn";
+    case "interface":
+      return "iface";
+    case "method":
+      return "fn";
+    case "module":
+      return "mod";
+    case "type":
+      return "type";
+    case "export":
+      return "exp";
+    case "import":
+      return "imp";
+  }
+}
+
+function languageTag(language: FileSkeletonEntry["language"]): string {
+  return language === "typescript" ? "ts" : language;
+}
+
+function formatGroupedImports(entries: SkeletonEntry[]): string {
+  const imports = entries.filter((entry) => entry.kind === "import").map((entry) => formatImportEntry(entry));
+  return imports.length === 0 ? "" : `imp: ${imports.join("; ")}`;
+}
+
+function formatGroupedExports(entries: SkeletonEntry[]): string {
+  const exports = entries.filter((entry) => entry.kind === "export").map((entry) => trimExportSignature(entry.signature));
+  return exports.length === 0 ? "" : `exp: ${exports.join("; ")}`;
+}
+
+function formatImportEntry(entry: SkeletonEntry): string {
+  const signature = entry.signature;
+  const source = entry.name;
+  const named = signature.match(/\{\s*([^}]+?)\s*\}/u)?.[1]?.replace(/\s+/gu, "");
+  if (named) {
+    return `${source}{${named}}`;
+  }
+
+  if (signature.includes("* as ")) {
+    return `${source}*`;
+  }
+
+  const defaultMatch = signature.match(/^import\s+([A-Za-z_$][\w$]*)\s+from/u);
+  if (defaultMatch) {
+    return `${source}{default=${defaultMatch[1]}}`;
+  }
+
+  return source;
+}
+
+function trimExportSignature(signature: string): string {
+  return signature
+    .replace(/^export\s+/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function trimSignatureForOutput(signature: string, maxSignatureChars: number): SignatureResult {
+  const compact = signature.replace(/\s+/gu, " ").trim();
+  if (compact.length <= maxSignatureChars) {
+    return { text: compact, truncated: false };
+  }
+
+  return { text: `${compact.slice(0, Math.max(0, maxSignatureChars - 3)).trimEnd()}...`, truncated: true };
+}
+
+function countSourceLines(source: string): number {
+  if (source.length === 0) {
+    return 0;
+  }
+
+  const normalized = source.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+  return lines.at(-1) === "" ? lines.length - 1 : lines.length;
 }
 
 function extractSkeletonEntries(
@@ -482,6 +679,18 @@ function validateLimit(limit: number | undefined): number {
   }
 
   return Math.min(limit, MAX_FILE_SKELETON_LIMIT);
+}
+
+function validateMaxSignatureChars(maxSignatureChars: number | undefined): number {
+  if (maxSignatureChars === undefined) {
+    return DEFAULT_MAX_SIGNATURE_CHARS;
+  }
+
+  if (!Number.isFinite(maxSignatureChars) || !Number.isInteger(maxSignatureChars) || maxSignatureChars <= 0) {
+    throw new FileSkeletonError("maxSignatureChars must be a positive integer when provided.");
+  }
+
+  return Math.min(maxSignatureChars, MAX_SIGNATURE_CHARS);
 }
 
 async function statPath(resolved: ResolvedWorkspacePath): Promise<Stats> {

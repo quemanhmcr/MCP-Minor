@@ -10,6 +10,7 @@ interface TrackedDocument {
   hashes: Uint32Array;
   anchors: string[];
   contentHash: string;
+  editReady: boolean;
 }
 
 const storage = new Map<string, Map<string, TrackedDocument>>();
@@ -17,6 +18,7 @@ const storage = new Map<string, Map<string, TrackedDocument>>();
 export interface AnchorSnapshot {
   anchors: string[];
   contentHash: string;
+  editReady: boolean;
 }
 
 export function getAnchorDelimiter(): string {
@@ -31,7 +33,13 @@ export function formatLineWithAnchor(content: string, anchor: string): string {
   return `${anchor}${ANCHOR_DELIMITER}${content}`;
 }
 
-export function reconcileAnchors(sessionId: string, absolutePath: string, lines: string[], documentHash?: string): string[] {
+export function reconcileAnchors(
+  sessionId: string,
+  absolutePath: string,
+  lines: string[],
+  documentHash?: string,
+  options: { editReady?: boolean } = {},
+): string[] {
   if (lines.length > MAX_TRACKED_LINES) {
     return lines.map((_, index) => `L${index + 1}`);
   }
@@ -46,6 +54,7 @@ export function reconcileAnchors(sessionId: string, absolutePath: string, lines:
     refreshDocument(sessionState, documentKey, {
       ...tracked,
       contentHash: currentContentHash,
+      editReady: Boolean(options.editReady),
     });
     return tracked.anchors;
   }
@@ -55,6 +64,7 @@ export function reconcileAnchors(sessionId: string, absolutePath: string, lines:
     hashes: currentHashes,
     anchors,
     contentHash: currentContentHash,
+    editReady: Boolean(options.editReady),
   });
 
   return anchors;
@@ -71,6 +81,7 @@ export function getAnchorSnapshot(sessionId: string, absolutePath: string): Anch
   return {
     anchors: [...tracked.anchors],
     contentHash: tracked.contentHash,
+    editReady: tracked.editReady,
   };
 }
 

@@ -49,29 +49,48 @@ describe("edit_file MCP tool", () => {
 
       expect(editResult.isError).toBeUndefined();
       expect(editResult.structuredContent).toMatchObject({
+        view: "summary",
         relativePath: "src/file.ts",
         changed: true,
         editsApplied: 1,
-        lineEnding: "lf",
-        appliedEdits: [
-          {
-            anchor: betaAnchor,
-            startLine: 2,
-            endLine: 2,
-            oldText: "beta",
-            newText: "BETA",
-          },
-        ],
       });
+      expect(JSON.stringify(editResult.structuredContent)).not.toContain("appliedEdits");
 
       const reread = await client.callTool({
         name: "read_file",
-        arguments: { paths: ["src/file.ts"] },
+        arguments: { paths: ["src/file.ts"], format: "json" },
       });
       const structured = reread.structuredContent as {
         files: Array<{ lines: Array<{ text: string }> }>;
       };
       expect(structured.files[0].lines.map((line) => line.text)).toEqual(["alpha", "BETA", "gamma"]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("rejects edits after default read mode until the file is read with view edit", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const read = await client.callTool({
+        name: "read_file",
+        arguments: { paths: ["src/file.ts"], view: "read" },
+      });
+      expect(read.isError).toBeUndefined();
+
+      const result = await client.callTool({
+        name: "edit_file",
+        arguments: {
+          path: "src/file.ts",
+          edits: [{ anchor: "A00000000", oldText: "alpha", newText: "ALPHA" }],
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toBe('Path \'src/file.ts\' was last read without edit anchors. Call read_file with view: "edit" before edit_file.');
     } finally {
       await client.close();
       await server.close();
@@ -104,7 +123,7 @@ describe("edit_file MCP tool", () => {
       expect(secondEdit.isError).toBeUndefined();
       const finalRead = await client.callTool({
         name: "read_file",
-        arguments: { paths: ["src/file.ts"] },
+        arguments: { paths: ["src/file.ts"], format: "json" },
       });
       const structured = finalRead.structuredContent as {
         files: Array<{ lines: Array<{ text: string }> }>;
@@ -188,7 +207,7 @@ describe("edit_file MCP tool", () => {
       expect(result.content).toEqual([
         {
           type: "text",
-          text: "Path 'src/file.ts' has no anchor state. Call read_file on this file before edit_file.",
+          text: 'Path \'src/file.ts\' has no edit-ready anchor state. Call read_file with view: "edit" before edit_file.',
         },
       ]);
     } finally {
@@ -232,6 +251,7 @@ describe("edit_file MCP tool", () => {
         arguments: {
           path: "src/file.ts",
           edits: [{ anchor: betaAnchor, oldText: "beta", newText: "BETA\nBETA2" }],
+          format: "json",
         },
       });
 
@@ -259,7 +279,7 @@ describe("edit_file MCP tool", () => {
 async function readAnchor(client: Client, text: string): Promise<string> {
   const result = await client.callTool({
     name: "read_file",
-    arguments: { paths: ["src/file.ts"] },
+    arguments: { paths: ["src/file.ts"], format: "json" },
   });
   const structured = result.structuredContent as {
     files: Array<{ lines: Array<{ text: string; anchor: string }> }>;

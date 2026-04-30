@@ -92,7 +92,11 @@ export async function editWorkspaceFile(context: RuntimeContext, input: EditFile
   const document = await readTextDocument(resolved, stat);
   const snapshot = getAnchorSnapshot(context.sessionId, resolved.absolutePath);
   if (!snapshot) {
-    throw new EditFileError(`Path '${resolved.inputPath}' has no anchor state. Call read_file on this file before edit_file.`);
+    throw new EditFileError(`Path '${resolved.inputPath}' has no edit-ready anchor state. Call read_file with view: "edit" before edit_file.`);
+  }
+
+  if (!snapshot.editReady) {
+    throw new EditFileError(`Path '${resolved.inputPath}' was last read without edit anchors. Call read_file with view: "edit" before edit_file.`);
   }
 
   const fileHashBefore = contentHash(document.text);
@@ -107,7 +111,7 @@ export async function editWorkspaceFile(context: RuntimeContext, input: EditFile
   const fileHashAfter = contentHash(normalizedFinalText);
 
   await fs.writeFile(resolved.absolutePath, finalText, "utf8");
-  reconcileAnchors(context.sessionId, resolved.absolutePath, finalLines, fileHashAfter);
+  reconcileAnchors(context.sessionId, resolved.absolutePath, finalLines, fileHashAfter, { editReady: true });
 
   return {
     path: resolved.absolutePath,
@@ -135,10 +139,9 @@ export async function editWorkspaceFile(context: RuntimeContext, input: EditFile
 
 export function formatEditFileResult(result: EditFileResult): string {
   return [
-    `Applied ${result.editsApplied} edit(s) to ${result.relativePath}.`,
-    `File hash: ${result.fileHashBefore} -> ${result.fileHashAfter}.`,
-    result.diff,
-  ].join("\n\n");
+    `edit: ${result.relativePath} | applied ${result.editsApplied} | hash ${result.fileHashBefore}->${result.fileHashAfter}`,
+    ...result.appliedEdits.map((edit) => `@L${edit.startLine} -${edit.linesRemoved} +${edit.linesAdded}`),
+  ].join("\n");
 }
 
 function validatePath(userPath: unknown): string {

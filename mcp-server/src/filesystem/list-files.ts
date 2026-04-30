@@ -34,6 +34,13 @@ export interface ListFilesResult {
   truncated: boolean;
 }
 
+export interface CompactListFilesResult {
+  view: "outline";
+  entries: number;
+  limit: number;
+  truncated: boolean;
+}
+
 interface WalkState {
   entries: ListFilesEntry[];
   limit: number;
@@ -65,6 +72,24 @@ export async function listWorkspaceFiles(context: RuntimeContext, input: ListFil
     entries: state.entries,
     limit,
     truncated: state.truncated,
+  };
+}
+
+export function formatListFilesCompact(result: ListFilesResult): string {
+  const lines = [
+    `list: ${result.entries.length}/${result.limit}${result.truncated ? " truncated" : ""} paths`,
+    ...result.entries.map((entry) => `${entry.type === "directory" ? "d" : "f"} ${entry.relativePath}`),
+  ];
+
+  return lines.join("\n");
+}
+
+export function compactListFilesResult(result: ListFilesResult): CompactListFilesResult {
+  return {
+    view: "outline",
+    entries: result.entries.length,
+    limit: result.limit,
+    truncated: result.truncated,
   };
 }
 

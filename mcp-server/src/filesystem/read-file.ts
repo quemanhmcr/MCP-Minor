@@ -34,6 +34,7 @@ export interface ReadFileInput {
   start_line?: number;
   end_line?: number;
   lineLimit?: number;
+  includeAnchors?: boolean;
 }
 
 export interface ReadFileLine {
@@ -69,6 +70,22 @@ export interface ReadFileResult {
   truncated: boolean;
 }
 
+export interface CompactReadFileResult {
+  view: "read" | "edit";
+  files: Array<{
+    relativePath: string;
+    fileHash: string;
+    totalLines: number;
+    startLine: number;
+    endLine: number;
+    truncated: boolean;
+    editReady: boolean;
+    editFileCompatibility: EditFileCompatibility;
+  }>;
+  lineLimit: number;
+  truncated: boolean;
+}
+
 interface LineRange {
   startLine?: number;
   endLine?: number;
@@ -95,7 +112,7 @@ export async function readWorkspaceFiles(context: RuntimeContext, input: ReadFil
       break;
     }
 
-    files.push(await readOneFile(context, userPath, range, lineLimit, outputCap));
+    files.push(await readOneFile(context, userPath, range, lineLimit, outputCap, input.includeAnchors ?? true));
   }
 
   return {
@@ -105,15 +122,34 @@ export async function readWorkspaceFiles(context: RuntimeContext, input: ReadFil
   };
 }
 
-export function formatReadFileResult(result: ReadFileResult): string {
+export function formatReadFileResult(result: ReadFileResult, options: { includeAnchors?: boolean } = {}): string {
   return result.files
     .map((file) => {
-      const header = result.files.length > 1 ? `--- ${file.relativePath} ---\n` : "";
+      const header = `file: ${file.relativePath} | hash:${file.fileHash} | ${file.totalLines}L (${file.startLine}-${file.endLine})${options.includeAnchors ? " | edit-ready" : ""}`;
+      const fileBreak = result.files.length > 1 ? `--- ${file.relativePath} ---\n` : "";
       const editFileWarning =
-        file.editFileCompatibility.reason === undefined ? "" : `\n[Edit File Warning: ${file.editFileCompatibility.reason}]`;
-      return `${header}[File Hash: ${file.fileHash}]${editFileWarning}\n${file.content}`;
+        file.editFileCompatibility.reason === undefined ? "" : `\nwarn: ${file.editFileCompatibility.reason}`;
+      return `${fileBreak}${header}${editFileWarning}\n${file.content}`;
     })
     .join("\n\n");
+}
+
+export function compactReadFileResult(result: ReadFileResult, options: { includeAnchors?: boolean } = {}): CompactReadFileResult {
+  return {
+    view: options.includeAnchors ? "edit" : "read",
+    files: result.files.map((file) => ({
+      relativePath: file.relativePath,
+      fileHash: file.fileHash,
+      totalLines: file.totalLines,
+      startLine: file.startLine,
+      endLine: file.endLine,
+      truncated: file.truncated,
+      editReady: Boolean(options.includeAnchors),
+      editFileCompatibility: file.editFileCompatibility,
+    })),
+    lineLimit: result.lineLimit,
+    truncated: result.truncated,
+  };
 }
 
 function validatePaths(paths: unknown): string[] {
@@ -170,6 +206,7 @@ async function readOneFile(
   range: LineRange,
   lineLimit: number,
   outputCap: OutputCapState,
+  includeAnchors: boolean,
 ): Promise<ReadFileEntry> {
   const resolved = resolveWorkspacePath(context, userPath);
   const stat = await statPath(resolved);
@@ -194,7 +231,10 @@ async function readOneFile(
   const allLines = splitLines(text);
   const fileHash = contentHash(text);
   const editFileCompatibility = getEditFileCompatibility(stat);
-  const allAnchors = reconcileAnchors(context.sessionId, resolved.absolutePath, allLines, fileHash);
+  const reconciledAnchors = reconcileAnchors(context.sessionId, resolved.absolutePath, allLines, fileHash, {
+    editReady: includeAnchors,
+  });
+  const allAnchors = includeAnchors ? reconciledAnchors : allLines.map(() => "");
   const startLine = range.startLine ?? 1;
   const requestedEndLine = range.endLine ?? allLines.length;
   const boundedStartIndex = Math.min(startLine - 1, allLines.length);
@@ -210,7 +250,7 @@ async function readOneFile(
       line: lineNumber,
       anchor,
       text: line,
-      formatted: `${lineNumber}: ${formatLineWithAnchor(line, anchor)}`,
+      formatted: includeAnchors ? `${lineNumber}: ${formatLineWithAnchor(line, anchor)}` : `${lineNumber}: ${line}`,
     };
   });
   const cappedByLineLimit = cappedLineCount < lineCount;

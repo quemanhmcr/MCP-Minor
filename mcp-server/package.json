@@ -14,6 +14,7 @@
     "build": "tsc -p tsconfig.build.json && node scripts/copy-tree-sitter-assets.mjs",
     "dev": "tsx src/index.ts",
     "lint": "eslint .",
+    "measure:output-size": "tsx scripts/measure-output-size.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

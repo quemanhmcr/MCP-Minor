@@ -1,4 +1,9 @@
-import { normalizeToolError, structuredToolResponse, toolErrorResponse } from "../src/tools/response.js";
+import {
+  compactToolResponse,
+  normalizeToolError,
+  structuredToolResponse,
+  toolErrorResponse,
+} from "../src/tools/response.js";
 
 describe("tool response helpers", () => {
   it("returns text JSON and structured content for successful results", () => {
@@ -16,6 +21,21 @@ describe("tool response helpers", () => {
         },
       ],
       structuredContent: result,
+    });
+  });
+
+  it("returns compact text with lean structured content", () => {
+    expect(compactToolResponse("one\nline", { format: "compact", entries: 1 })).toEqual({
+      content: [
+        {
+          type: "text",
+          text: "one\nline",
+        },
+      ],
+      structuredContent: {
+        format: "compact",
+        entries: 1,
+      },
     });
   });
 

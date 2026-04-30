@@ -43,6 +43,44 @@ describe("list_files MCP tool", () => {
         },
       });
 
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toBe("list: 1/200 paths\nf file.txt");
+      expect(result.structuredContent).toEqual({
+        view: "outline",
+        entries: 1,
+        limit: 200,
+        truncated: false,
+      });
+      expect(content[0]?.text).not.toContain(workspaceRoot);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns full structured JSON when requested", async () => {
+    const server = createMcpServer({
+      cwd: workspaceRoot,
+      sessionId: "test",
+      workspaceRoots: [workspaceRoot],
+    });
+    const client = new Client({
+      name: "test-client",
+      version: "0.0.0",
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.callTool({
+        name: "list_files",
+        arguments: {
+          paths: ["."],
+          format: "json",
+        },
+      });
+
       expect(result.structuredContent).toEqual({
         entries: [
           {

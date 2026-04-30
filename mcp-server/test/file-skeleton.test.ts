@@ -4,6 +4,8 @@ import path from "node:path";
 
 import {
   DEFAULT_FILE_SKELETON_LIMIT,
+  formatFileSkeletonCompact,
+  formatFileSkeletonResult,
   getWorkspaceFileSkeleton,
   type SkeletonEntry,
 } from "../src/filesystem/file-skeleton.js";
@@ -440,6 +442,74 @@ describe("getWorkspaceFileSkeleton", () => {
     });
     expect(flattenEntries(result.files[0].entries).map((entry) => entry.name)).toEqual(["one", "Box"]);
   });
+
+  it("formats compact output with imports, symbols, parse markers, and truncation metadata", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "compact.ts"),
+      [
+        "import { readFile } from 'node:fs/promises';",
+        "export interface Named {",
+        "  getName(): string;",
+        "}",
+        "export type NameMap = Record<string, string>;",
+        "export enum Mode { Plan = 'plan' }",
+        "export default function() {",
+        "  if (",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/compact.ts"], limit: 4 });
+    const compact = formatFileSkeletonResult(result);
+
+    expect(compact).toContain("file:src/compact.ts | ts | 9L | n:6/4 | parse:err | trunc");
+    expect(compact).toContain("trunc");
+    expect(compact).toContain("imp: node:fs/promises{readFile}");
+    expect(compact).toContain("iface Named L2-4");
+    expect(compact).toContain("  fn getName L3");
+    expect(compact).toContain("type NameMap L5");
+    expect(compact).not.toContain("startByte");
+    expect(compact).not.toContain('"id"');
+  });
+
+  it("formats compact anonymous default exports and per-entry parse error markers", async () => {
+    await fs.writeFile(
+      path.join(workspaceRoot, "src", "compact-defaults.ts"),
+      [
+        "export default function() {",
+        "  return 1;",
+        "}",
+        "export class Broken {",
+        "  run() {",
+        "    if (",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/compact-defaults.ts"] });
+    const compact = formatFileSkeletonResult(result);
+
+    expect(compact).toContain("fn default L1-3 export default function()");
+    expect(compact).toContain("cls Broken L4-8 export class Broken parse-error");
+    expect(compact).toContain("  fn run L5-7 run() parse-error");
+  });
+
+  it("formats outline view without signatures and honors signature length budgets", async () => {
+    const params = Array.from({ length: 20 }, (_, index) => `param${index}: string`).join(", ");
+    await fs.writeFile(path.join(workspaceRoot, "src", "budget.ts"), `export function long(${params}): string { return ''; }\n`);
+
+    const result = await getWorkspaceFileSkeleton(context, { paths: ["src/budget.ts"] });
+    const outline = formatFileSkeletonCompact(result, { view: "outline" });
+    const signatures = formatFileSkeletonCompact(result, { view: "signatures", maxSignatureChars: 48 });
+
+    expect(outline).toContain("fn long L1");
+    expect(outline).not.toContain("param0");
+    expect(signatures).toContain("fn long L1 export function long(param0: string, param1:");
+    expect(signatures).toContain("sig-trunc");
+  });
 });
 
 describe("getWorkspaceFileSkeleton real Dirac repo smoke", () => {
@@ -478,6 +548,9 @@ describe("getWorkspaceFileSkeleton real Dirac repo smoke", () => {
   ])("extracts expected entries from $filePath", async ({ filePath, language, expected }) => {
     const result = await getWorkspaceFileSkeleton(context, { paths: [filePath] });
     const file = result.files[0];
+    const compact = formatFileSkeletonResult(result);
+    const fullJson = JSON.stringify(result, null, 2);
+    const raw = await fs.readFile(path.join(repoRoot, filePath), "utf8");
     const flattened = flattenEntries(file.entries);
     const kindNamePairs = flattened.map((entry) => [entry.kind, entry.name]);
 
@@ -488,6 +561,10 @@ describe("getWorkspaceFileSkeleton real Dirac repo smoke", () => {
     expect(file.entryCount).toBeGreaterThanOrEqual(expected.length);
     for (const pair of expected) {
       expect(kindNamePairs).toContainEqual(pair);
+    }
+    expect(compact.length).toBeLessThan(fullJson.length * 0.5);
+    if (filePath !== "dirac/scripts/file-utils.mjs") {
+      expect(compact.length).toBeLessThan(raw.length * 0.8);
     }
   });
 });

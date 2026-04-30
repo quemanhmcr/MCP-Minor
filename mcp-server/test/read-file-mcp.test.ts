@@ -41,13 +41,14 @@ describe("read_file MCP tool", () => {
       expect(content[0]).toMatchObject({
         type: "text",
       });
-      expect(content[0]?.text).toMatch(/\[File Hash: [0-9a-f]{8}\]\n2: A[0-9a-f]{8}§beta/u);
+      expect(content[0]?.text).toMatch(/file: src\/file\.ts \| hash:[0-9a-f]{8} \| 3L \(2-2\)\n2: beta/u);
+      expect(content[0]?.text).not.toMatch(/A[0-9a-f]{8}§/u);
       expect(result.structuredContent).toMatchObject({
+        view: "read",
         lineLimit: 2_000,
         truncated: false,
         files: [
           {
-            path: path.join(workspaceRoot, "src", "file.ts"),
             relativePath: "src/file.ts",
             editFileCompatibility: {
               editable: true,
@@ -56,21 +57,72 @@ describe("read_file MCP tool", () => {
             totalLines: 3,
             startLine: 2,
             endLine: 2,
+            editReady: false,
             truncated: false,
           },
         ],
       });
+      expect(JSON.stringify(result.structuredContent)).not.toContain("lines");
+      expect(JSON.stringify(result.structuredContent)).not.toContain(path.join(workspaceRoot, "src", "file.ts"));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns full per-line structured JSON when requested", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const result = await client.callTool({
+        name: "read_file",
+        arguments: {
+          paths: ["src/file.ts"],
+          startLine: 2,
+          endLine: 2,
+          format: "json",
+        },
+      });
+
       const structured = result.structuredContent as {
         files: Array<{
+          path: string;
           lines: Array<{ line: number; text: string; anchor: string; formatted: string }>;
         }>;
       };
+      expect(structured.files[0].path).toBe(path.join(workspaceRoot, "src", "file.ts"));
       expect(structured.files[0].lines).toHaveLength(1);
       expect(structured.files[0].lines[0]).toMatchObject({
         line: 2,
         text: "beta",
       });
       expect(structured.files[0].lines[0].anchor).toMatch(/^A[0-9a-f]{8}$/u);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns edit-ready anchored compact text when requested", async () => {
+    const { client, server } = await connectClient(workspaceRoot);
+
+    try {
+      const result = await client.callTool({
+        name: "read_file",
+        arguments: {
+          paths: ["src/file.ts"],
+          startLine: 2,
+          endLine: 2,
+          view: "edit",
+        },
+      });
+
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0]?.text).toMatch(/edit-ready\n2: A[0-9a-f]{8}§beta/u);
+      expect(result.structuredContent).toMatchObject({
+        view: "edit",
+        files: [{ relativePath: "src/file.ts", editReady: true }],
+      });
     } finally {
       await client.close();
       await server.close();
@@ -119,7 +171,7 @@ describe("read_file MCP tool", () => {
       expect(result.isError).toBeUndefined();
       const content = result.content as Array<{ type: string; text: string }>;
       expect(content[0]?.text).toContain(
-        "[Edit File Warning: This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.]",
+        "warn: This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.",
       );
       expect(result.structuredContent).toMatchObject({
         files: [

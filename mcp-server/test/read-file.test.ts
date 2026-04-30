@@ -181,7 +181,7 @@ describe("readWorkspaceFiles", () => {
 
     expect(result.files[0].content).not.toContain("Edit File Warning");
     expect(formatReadFileResult(result)).toContain(
-      "[Edit File Warning: This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.]",
+      "warn: This file exceeds the 1MB edit mutation cap. read_file can inspect it with line ranges, but edit_file cannot mutate it.",
     );
   });
 
